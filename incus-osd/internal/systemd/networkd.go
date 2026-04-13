@@ -188,6 +188,16 @@ func ApplyNetworkConfiguration(ctx context.Context, s *state.State, networkCfg *
 	return nil
 }
 
+// FlushDNSCache instructs the system to flush the DNS cache. This is needed after network changes to ensure that any cached DNS entries that may have become stale are cleared.
+func FlushDNSCache(ctx context.Context) error {
+	_, err := subprocess.RunCommandContext(ctx, "resolvectl", "flush-caches")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 // ValidateNetworkConfiguration performs some basic validation checks on the supplied network configuration.
 func ValidateNetworkConfiguration(networkCfg *api.SystemNetworkConfig, requireValidMAC bool) error {
 	if networkCfg == nil {
