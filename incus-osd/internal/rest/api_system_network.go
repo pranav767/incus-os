@@ -296,7 +296,7 @@ func (s *Server) apiSystemNetworkConfirm(w http.ResponseWriter, r *http.Request)
 //	    $ref: "#/responses/EmptySyncResponse"
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
-func (s *Server) apiSystemNetworkFlushDNS(w http.ResponseWriter, r *http.Request) {
+func (*Server) apiSystemNetworkFlushDNS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
 	if r.Method != http.MethodPost {
