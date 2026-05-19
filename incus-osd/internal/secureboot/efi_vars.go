@@ -19,7 +19,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/lxc/incus/v6/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/subprocess"
 
 	incusoscerts "github.com/lxc/incus-os/incus-osd/certs"
 	"github.com/lxc/incus-os/incus-osd/internal/util"
@@ -401,6 +401,19 @@ func checkDbxUpdateWouldBrickUKI(dbxFilePath string) error {
 
 		if bytes.Equal(pem.EncodeToMemory(&publicKeyBlock), ukiPubKey) {
 			return fmt.Errorf("unable to apply dbx update, since UKI image '%s' is signed by the key which would be revoked", ukiFile)
+		}
+	}
+
+	return nil
+}
+
+// ClearIncusOSInstallComplete removes the "IncusOSInstallComplete" UEFI variable, if it exists.
+func ClearIncusOSInstallComplete(ctx context.Context) error {
+	_, err := subprocess.RunCommandContext(ctx, "chattr", "-i", "/sys/firmware/efi/efivars/IncusOSInstallComplete-12f075e0-2d07-493d-811a-00920a72c04c")
+	if err == nil {
+		err := os.Remove("/sys/firmware/efi/efivars/IncusOSInstallComplete-12f075e0-2d07-493d-811a-00920a72c04c")
+		if err != nil {
+			return err
 		}
 	}
 

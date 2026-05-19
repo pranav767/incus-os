@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/shared/osarch"
-	"github.com/lxc/incus/v6/shared/subprocess"
-	"github.com/lxc/incus/v6/shared/units"
+	"github.com/lxc/incus/v7/shared/osarch"
+	"github.com/lxc/incus/v7/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/units"
 	"golang.org/x/sys/unix"
 
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
@@ -158,6 +158,15 @@ func CheckSystemRequirements(ctx context.Context) error { //nolint:revive
 
 	// Perform install-specific checks.
 	if installSeed != nil { //nolint:nestif
+		// If ForceInstall is true, wipe the IncusOSInstallComplete UEFI variable, if set. This makes it
+		// easier to perform a re-installation without needing to manually wipe the UEFI variable.
+		if installSeed.ForceInstall {
+			err := secureboot.ClearIncusOSInstallComplete(ctx)
+			if err != nil {
+				return err
+			}
+		}
+
 		// Sanity check: If the "IncusOSInstallComplete" UEFI variable is set, that means an IncusOS install
 		// completed successfully but incus-osd hasn't yet cleared this UEFI variable on its first boot. This
 		// means we've likely accidentally booted from the install media rather than the newly installed system.
@@ -1174,8 +1183,14 @@ func configureSWTPM(ctx context.Context, isInstall bool) error {
 
 // initializeSWTPM initializes the swtpm state in the given root directory.
 func initializeSWTPM(ctx context.Context, swtpmRoot string) error {
+	// Get the OS name.
+	osName, _, err := systemd.GetCurrentRelease(ctx)
+	if err != nil {
+		return err
+	}
+
 	// Create the swtpm state directory.
-	err := os.MkdirAll(swtpmRoot, 0o700)
+	err = os.MkdirAll(swtpmRoot, 0o700)
 	if err != nil {
 		return err
 	}
@@ -1186,7 +1201,7 @@ func initializeSWTPM(ctx context.Context, swtpmRoot string) error {
 		return err
 	}
 
-	err = os.WriteFile("/etc/swtpm-localca.options", []byte("--platform-manufacturer IncusOS\n--platform-version 1.0\n--platform-model QEMU"), 0o644)
+	err = os.WriteFile("/etc/swtpm-localca.options", []byte("--platform-manufacturer "+osName+"\n--platform-version 1.0\n--platform-model QEMU"), 0o644)
 	if err != nil {
 		return err
 	}

@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/lxc/incus/v6/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/subprocess"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
@@ -217,7 +217,5 @@ func (*Linstor) Struct() any {
 // Supported returns whether the system can use Linstor.
 func (n *Linstor) Supported() bool {
 	// Linstor requires incus-linstor to be installed.
-	_, ok := n.state.Applications["incus-linstor"]
-
-	return ok
+	return n.state.Applications.IncusLinstor.State.Version != ""
 }

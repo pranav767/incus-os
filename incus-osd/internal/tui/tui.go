@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/lxc/incus/v6/shared/api"
-	"github.com/lxc/incus/v6/shared/resources"
-	"github.com/lxc/incus/v6/shared/units"
+	"github.com/lxc/incus/v7/shared/api"
+	"github.com/lxc/incus/v7/shared/resources"
+	"github.com/lxc/incus/v7/shared/units"
 	"github.com/rivo/tview"
 
+	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
@@ -67,6 +68,13 @@ func GetTUI(s *state.State) (*TUI, error) {
 	_, err := os.Stat("/dev/virtio-ports/org.linuxcontainers.incus")
 	if err == nil {
 		ttyDevs = append(ttyDevs, "/dev/ttyS0")
+	}
+
+	// Add any additional user-provided console devices.
+	for _, console := range s.System.Kernel.Config.Console {
+		if !slices.Contains(ttyDevs, console.Device) {
+			ttyDevs = append(ttyDevs, console.Device)
+		}
 	}
 
 	// Get information about the system's resources. Since we only display CPU
@@ -309,13 +317,22 @@ func (t *TUI) redrawScreen() {
 			t.frame.AddText("WARNING: Degraded security state: Secure Boot is disabled", true, tview.AlignCenter, tcell.ColorRed)
 		}
 
-		// Get list of applications from state.
-		applications := []string{}
-		for app, info := range t.state.Applications {
-			applications = append(applications, app+"("+info.State.Version+")")
+		if t.state.FullAgentEnabled {
+			t.frame.AddText("WARNING: Degraded security state: incus-agent has been fully enabled", true, tview.AlignCenter, tcell.ColorRed)
 		}
 
-		slices.Sort(applications)
+		// Get list of applications from state.
+		apps, err := applications.GetInstalled(context.Background(), t.state)
+		if err != nil {
+			return
+		}
+
+		appStatus := []string{}
+		for _, app := range apps {
+			appStatus = append(appStatus, app.Name()+"("+app.Version()+")")
+		}
+
+		slices.Sort(appStatus)
 
 		consoleWidth, _ := t.screen.Size()
 		for _, line := range wrapFooterText("Network configuration", strings.Join(t.getIPAddresses(), ", "), consoleWidth) {
@@ -326,7 +343,7 @@ func (t *TUI) redrawScreen() {
 			t.frame.AddText(line, false, tview.AlignLeft, tcell.ColorWhite)
 		}
 
-		for _, line := range wrapFooterText("Installed application(s)", strings.Join(applications, ", "), consoleWidth) {
+		for _, line := range wrapFooterText("Installed application(s)", strings.Join(appStatus, ", "), consoleWidth) {
 			t.frame.AddText(line, false, tview.AlignLeft, tcell.ColorWhite)
 		}
 
@@ -414,7 +431,7 @@ func wrapFooterText(label string, text string, maxLineLength int) []string {
 }
 
 // EarlyError renders a basic startup error to the console.
-func EarlyError(msg string) {
+func EarlyError(msg string, osName string) {
 	// Send error to stderr first.
 	_, _ = fmt.Fprintf(os.Stderr, "Error: %s\n", msg)
 
@@ -433,7 +450,7 @@ func EarlyError(msg string) {
 	// Set up a simple textview.
 	textView := tview.NewTextView()
 	textView.SetBorder(true)
-	textView.SetTitle(" !! IncusOS critical startup error !! ")
+	textView.SetTitle(" !! " + osName + " critical startup error !! ")
 	textView.SetText(msg)
 
 	// Render the error.

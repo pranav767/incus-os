@@ -17,8 +17,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lxc/incus/v6/shared/subprocess"
-	"github.com/lxc/incus/v6/shared/units"
+	ocapi "github.com/FuturFusion/operations-center/shared/api"
+	"github.com/lxc/incus/v7/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/units"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/nftables"
@@ -42,17 +43,15 @@ type expPhysDev struct {
 }
 
 // ApplyNetworkConfiguration instructs systemd-networkd to apply the supplied network configuration.
-func ApplyNetworkConfiguration(ctx context.Context, s *state.State, networkCfg *api.SystemNetworkConfig, timeout time.Duration, allowPartialConfig bool, refresh func(context.Context, *state.State) error, delayRefreshCheck bool) error {
+func ApplyNetworkConfiguration(ctx context.Context, s *state.State, networkCfg *api.SystemNetworkConfig, timeout time.Duration, allowPartialConfig bool, refresh func(context.Context, *state.State, ocapi.ServerSelfUpdateCause) error, delayRefreshCheck bool) error {
 	// If a timezone is specified, apply it before doing any network configuration.
-	if networkCfg.Time != nil && networkCfg.Time.Timezone != "" {
-		_, err := subprocess.RunCommandContext(ctx, "timedatectl", "set-timezone", networkCfg.Time.Timezone)
-		if err != nil {
-			return err
-		}
+	err := SetTimezone(ctx, networkCfg.Time)
+	if err != nil {
+		return err
 	}
 
 	// Validate the new network configuration, allowing for invalid MACs.
-	err := ValidateNetworkConfiguration(networkCfg, false)
+	err = ValidateNetworkConfiguration(networkCfg, false)
 	if err != nil {
 		return err
 	}
@@ -178,7 +177,7 @@ func ApplyNetworkConfiguration(ctx context.Context, s *state.State, networkCfg *
 			ctx, ctxCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer ctxCancel()
 
-			err := refresh(ctx, s)
+			err := refresh(ctx, s, ocapi.ServerSelfUpdateCauseNetworkConfigChanged)
 			if err != nil {
 				slog.WarnContext(ctx, "Failed to refresh provider registration", "err", err)
 			}
@@ -1805,7 +1804,7 @@ func generateNetworkSectionContents(name string, vlans []api.SystemNetworkVLAN, 
 		}
 	}
 
-	// If there are search domains or name servers, add those to the config.
+	// If there are search domains or name servers or DNS over TLS defined, add those to the config.
 	if dns != nil {
 		if len(dns.SearchDomains) > 0 {
 			_, _ = fmt.Fprintf(&ret, "Domains=%s\n", strings.Join(dns.SearchDomains, " "))
@@ -1813,6 +1812,10 @@ func generateNetworkSectionContents(name string, vlans []api.SystemNetworkVLAN, 
 
 		for _, ns := range dns.Nameservers {
 			_, _ = fmt.Fprintf(&ret, "DNS=%s\n", ns)
+		}
+
+		if dns.DNSOverTLS {
+			_, _ = fmt.Fprint(&ret, "DNSOverTLS=yes\n")
 		}
 	}
 

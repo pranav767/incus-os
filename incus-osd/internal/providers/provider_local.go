@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	ocapi "github.com/FuturFusion/operations-center/shared/api"
+
 	"github.com/lxc/incus-os/incus-osd/internal/state"
 )
 
@@ -30,7 +32,7 @@ func (*local) ClearCache(_ context.Context) error {
 	return nil
 }
 
-func (*local) RefreshRegister(_ context.Context) error {
+func (*local) RefreshRegister(_ context.Context, _ ocapi.ServerSelfUpdateCause) error {
 	// No registration with the local provider.
 	return ErrRegistrationUnsupported
 }
@@ -94,7 +96,7 @@ func (p *local) GetOSUpdate(ctx context.Context) (OSUpdate, error) {
 	foundUpdateFile := false
 
 	for _, asset := range p.releaseAssets {
-		if strings.HasPrefix(filepath.Base(asset), "IncusOS_") && strings.Contains(filepath.Base(asset), p.releaseVersion) {
+		if strings.HasPrefix(filepath.Base(asset), p.state.OS.Name+"_") && strings.Contains(filepath.Base(asset), p.releaseVersion) {
 			foundUpdateFile = true
 
 			break
@@ -333,7 +335,7 @@ func (o *localOSUpdate) Download(ctx context.Context, targetPath string, progres
 
 	for _, asset := range o.assets {
 		// Only select OS files for the expected version.
-		if !strings.HasPrefix(filepath.Base(asset), "IncusOS_"+o.version) {
+		if !strings.HasPrefix(filepath.Base(asset), o.provider.state.OS.Name+"_"+o.version) {
 			continue
 		}
 

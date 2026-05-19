@@ -1,4 +1,5 @@
 import os
+import re
 import tempfile
 
 from .incus_test_vm import IncusTestVM, IncusOSException, util
@@ -9,17 +10,18 @@ def TestInstallMultipath(install_image):
         "install.json": """{"target":{"id":"scsi-3500577a4300c1e34"}}"""
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
     with tempfile.NamedTemporaryFile(dir=os.getcwd()) as disk_img:
         # Truncate the disk image file to 50GiB.
         disk_img.truncate(50*1024*1024*1024)
 
-        with IncusTestVM(test_name, test_image) as vm:
-            _commonMultipathChecks(vm, incusos_version, disk_img.name)
+        with IncusTestVM(os_name, test_name, test_image) as vm:
+            _commonMultipathChecks(vm, os_version, disk_img.name)
 
-            # Shouldn't see any mention of a degraded security state
-            vm.LogDoesntContain("incus-osd", "Degraded security state:")
+            # Shouldn't see any mention of a TPM or SecureBoot degraded security state
+            vm.LogDoesntContain("incus-osd", "Degraded security state: no physical TPM found, using swtpm")
+            vm.LogDoesntContain("incus-osd", "Degraded security state: Secure Boot is disabled")
 
 def TestInstallMultipathUseSWTPM(install_image):
     test_name = "multipath-use-swtpm"
@@ -27,25 +29,25 @@ def TestInstallMultipathUseSWTPM(install_image):
         "install.json": """{"target":{"id":"scsi-3500577a4300c1e34"},"security":{"missing_tpm":true}}"""
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
     with tempfile.NamedTemporaryFile(dir=os.getcwd()) as disk_img:
         # Truncate the disk image file to 50GiB.
         disk_img.truncate(50*1024*1024*1024)
 
-        with IncusTestVM(test_name, test_image) as vm:
+        with IncusTestVM(os_name, test_name, test_image) as vm:
             vm.RemoveDevice("vtpm")
 
-            _commonMultipathChecks(vm, incusos_version, disk_img.name)
+            _commonMultipathChecks(vm, os_version, disk_img.name)
 
             # Should see a log message about swtpm
             vm.WaitExpectedLog("incus-osd", "Degraded security state: no physical TPM found, using swtpm")
 
-def _commonMultipathChecks(vm, incusos_version, disk):
+def _commonMultipathChecks(vm, os_version, disk):
     vm.AddDevice("multipathdisk1", "disk", "source="+disk, "wwn=0x500577a4300c1e34")
     vm.AddDevice("multipathdisk2", "disk", "source="+disk, "wwn=0x500577a4300c1e34")
 
-    vm.WaitSystemReady(incusos_version, target="/dev/disk/by-id/scsi-3500577a4300c1e34", agent_timeout=600)
+    vm.WaitSystemReady(os_version, target="/dev/disk/by-id/scsi-3500577a4300c1e34", agent_timeout=600)
 
     # Verify that two of the drives belong to the multipath device. Because symlinks have been
     # overwritten, we can't just check specific drives under /dev/disk/by-id/.
@@ -64,7 +66,7 @@ def _commonMultipathChecks(vm, incusos_version, disk):
         raise IncusOSException("Multipath device '3500577a4300c1e34' not reported as active")
 
     result = vm.RunCommand("lsblk", "/dev/mapper/3500577a4300c1e34")
-    if "3500577a4300c1e34          252:0    0    50G  0 mpath" not in str(result):
+    if not re.search(r"3500577a4300c1e34\s+252:0\s+0\s+50G\s+0\s+mpath", str(result)):
         raise IncusOSException("Multipath device isn't properly reported")
-    if "root                   252:13   0    25G  0 crypt /" not in str(result):
+    if not re.search(r"root\s+252:13\s+0\s+25G\s+0\s+crypt\s+/", str(result)):
         raise IncusOSException("Root partition not properly reported")

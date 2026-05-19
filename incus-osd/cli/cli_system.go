@@ -1,7 +1,7 @@
 package cli
 
 import (
-	cli "github.com/lxc/incus/v6/shared/cmd"
+	cli "github.com/lxc/incus/v7/shared/cmd"
 	"github.com/spf13/cobra"
 )
 
@@ -98,6 +98,11 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 
 	subCommands := []subCommand{
 		{
+			name:        "fallback-listener",
+			description: "System fallback HTTPS listener configuration",
+			isWritable:  true,
+		},
+		{
 			name:        "kernel",
 			description: "System kernel configuration",
 			isWritable:  true,
@@ -152,6 +157,7 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 					action:      "tpm-rebind",
 					description: "Rebind the TPM (after using recovery key)",
 					endpoint:    "system/security",
+					confirm:     "rebind the TPM and reboot the system",
 				}
 
 				return []*cobra.Command{tpmRebindCmd.command()}
@@ -255,9 +261,10 @@ func (c *cmdAdminOSSystem) command() *cobra.Command {
 					os:          c.os,
 					action:      "check",
 					name:        "check",
-					description: "Check for updates",
+					description: "Check for updates and apply them",
 					endpoint:    "system/update",
 					hasData:     true,
+					confirm:     "apply any pending update",
 					defaultData: "{}",
 				}
 

@@ -22,6 +22,7 @@ type OS struct {
 	RunningRelease string `json:"running_release"`
 	NextRelease    string `json:"next_release"`
 	SuccessfulBoot bool   `json:"successful_boot"`
+	SystemIsReady  bool   `json:"-"`
 }
 
 // State represents the on-disk persistent state.
@@ -41,16 +42,26 @@ type State struct {
 	NetworkConfigurationChannel chan error `json:"-"`
 
 	// Triggers for daemon actions.
-	TriggerReboot   chan bool `json:"-"`
-	TriggerShutdown chan bool `json:"-"`
-	TriggerSuspend  chan bool `json:"-"`
-	TriggerUpdate   chan bool `json:"-"`
+	TriggerReboot           chan bool `json:"-"`
+	TriggerShutdown         chan bool `json:"-"`
+	TriggerSuspend          chan bool `json:"-"`
+	TriggerUpdate           chan bool `json:"-"`
+	TriggerFallbackListener chan bool `json:"-"`
 
 	SecureBoot         SecureBoot `json:"secure_boot"`
 	UsingSWTPM         bool       `json:"using_swtpm"`
 	SecureBootDisabled bool       `json:"secure_boot_disabled"`
+	FullAgentEnabled   bool       `json:"full_agent_enabled"`
 
-	Applications map[string]api.Application `json:"applications"`
+	Applications struct {
+		Debug            api.Application      `json:"debug"`
+		GPUSupport       api.Application      `json:"gpu_support"`
+		Incus            api.ApplicationIncus `json:"incus"`
+		IncusCeph        api.Application      `json:"incus_ceph"`
+		IncusLinstor     api.Application      `json:"incus_linstor"`
+		MigrationManager api.Application      `json:"migration_manager"`
+		OperationsCenter api.Application      `json:"operations_center"`
+	}
 
 	OS OS `json:"os"`
 
@@ -68,13 +79,14 @@ type State struct {
 	} `json:"services"`
 
 	System struct {
-		Kernel   api.SystemKernel   `json:"kernel"`
-		Logging  api.SystemLogging  `json:"logging"`
-		Network  api.SystemNetwork  `json:"network"`
-		Provider api.SystemProvider `json:"provider"`
-		Security api.SystemSecurity `json:"security"`
-		Update   api.SystemUpdate   `json:"update"`
-		Storage  api.SystemStorage  `json:"storage"`
+		FallbackListener api.SystemFallbackListener `json:"fallback_listener"`
+		Kernel           api.SystemKernel           `json:"kernel"`
+		Logging          api.SystemLogging          `json:"logging"`
+		Network          api.SystemNetwork          `json:"network"`
+		Provider         api.SystemProvider         `json:"provider"`
+		Security         api.SystemSecurity         `json:"security"`
+		Update           api.SystemUpdate           `json:"update"`
+		Storage          api.SystemStorage          `json:"storage"`
 	} `json:"system"`
 
 	// Used to handle an edge case of a new network configuration being applied, but

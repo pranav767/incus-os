@@ -16,8 +16,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/lxc/incus/v6/shared/ask"
-	"github.com/lxc/incus/v6/shared/revert"
+	"github.com/lxc/incus/v7/shared/ask"
+	"github.com/lxc/incus/v7/shared/revert"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v4"
 
@@ -698,7 +698,7 @@ func downloadCurrentIncusOSRelease(ctx context.Context, asker ask.Asker, imageFo
 	s.System.Provider.Config.Name = "images"
 	s.System.Update.Config.Channel = channel
 
-	provider, err := providers.Load(ctx, &s)
+	provider, err := providers.Load(ctx, &s, true)
 	if err != nil {
 		return "", err
 	}

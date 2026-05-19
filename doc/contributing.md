@@ -35,7 +35,36 @@ To test the update process, build a new image and update to it with:
     make
     make test-update
 
+## Extending the `cli` package
+
+IncusOS provides a `cli` package which is imported by Incus, Migration Manager and Operations Center to provide an end-user command line interface to IncusOS.
+
+When adding a new command or making some other change, it's easy to test the changes by building a local client binary. Assuming you already have
+the IncusOS repository cloned in your home directory, clone the Incus repository and create a symlink to the IncusOS `cli` package at the root:
+
+    git clone https://github.com/lxc/incus
+    cd incus/
+    ln -s ~/incus-os/incus-osd/cli/ .
+
+Then, update the import path of `cmd/incus/admin_os.go` from `github.com/lxc/incus-os/incus-osd/cli` to `github.com/lxc/incus/v6/cli`.
+
+Finally, build the local Incus client:
+
+    go build ./cmd/incus/
+
+You can now test your new command or other changes: `./incus admin os ...`
+
 ## Debugging
+
+```{note}
+Running commands or opening a shell on an IncusOS server is only possible when run as an Incus virtual machine and requires fully enabling `incus-agent`
+support. Be aware that this will cause the system to report a degraded security state via the API and an on-screen message. This is because running
+arbitrary commands within the virtual machine can make changes outside of the control of IncusOS.
+
+To fully enable `incus-agent` support in the virtual machine, run the following command and then restart the virtual machine.
+
+    incus config set <vm> systemd.credential.fully-enable-incus-agent=true
+```
 
 When IncusOS is run in an Incus virtual machine, it is possible to `exec` into the running
 system to facilitate debugging of the system:

@@ -48,7 +48,7 @@
         ]
     },
     "lego": {
-        "version": "v4.33.0",
+        "version": "v5.0.4",
         "repo": "https://github.com/go-acme/lego.git",
         "build_targets": [
             [
@@ -56,7 +56,7 @@
                 "dist/lego",
                 "-ldflags",
                 "-X main.version=@VERSION@",
-                "./cmd/lego"
+                "."
             ]
         ],
         "install_targets": [
@@ -70,7 +70,7 @@
         ]
     },
     "linux-firmware-base": {
-        "version": "20260309",
+        "version": "20260410",
         "repo": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware.git",
         "directory": "linux-firmware",
         "build_targets": [],
@@ -90,7 +90,7 @@
         ]
     },
     "linux-firmware-gpu": {
-        "version": "20260309",
+        "version": "20260410",
         "repo": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware.git",
         "directory": "linux-firmware",
         "build_targets": [],
@@ -125,7 +125,7 @@
         ]
     },
     "migration-manager": {
-        "version": "v0.6.7",
+        "version": "v0.6.10",
         "repo": "https://github.com/FuturFusion/migration-manager.git",
         "build_targets": [
             [
@@ -164,7 +164,7 @@
         ]
     },
     "netbird": {
-        "version": "v0.68.1",
+        "version": "v0.71.2",
         "repo": "https://github.com/netbirdio/netbird.git",
         "build_targets": [
             [
@@ -184,7 +184,7 @@
         ]
     },
     "opentofu": {
-        "version": "v1.11.6",
+        "version": "v1.12.0",
         "repo": "https://github.com/opentofu/opentofu.git",
         "build_targets": [
             [
@@ -202,7 +202,7 @@
         ]
     },
     "operations-center": {
-        "version": "v0.5.3",
+        "version": "v0.6.2",
         "repo": "https://github.com/FuturFusion/operations-center.git",
         "build_targets": [
             [
@@ -234,7 +234,7 @@
         ]
     },
     "tailscale": {
-        "version": "v1.96.5",
+        "version": "v1.98.2",
         "repo": "https://github.com/tailscale/tailscale.git",
         "build_targets": [
             [
@@ -267,7 +267,7 @@
         ]
     },
     "terraform-provider-incus": {
-        "version": "v1.0.2",
+        "version": "v1.1.0",
         "repo": "https://github.com/lxc/terraform-provider-incus.git",
         "build_targets": [
             [
@@ -291,7 +291,7 @@
         ]
     },
     "terraform-provider-null": {
-        "version": "v3.2.4",
+        "version": "v3.3.0",
         "repo": "https://github.com/hashicorp/terraform-provider-null.git",
         "build_targets": [
             [
@@ -315,7 +315,7 @@
         ]
     },
     "terraform-provider-random": {
-        "version": "v3.8.1",
+        "version": "v3.9.0",
         "repo": "https://github.com/hashicorp/terraform-provider-random.git",
         "build_targets": [
             [
@@ -339,7 +339,7 @@
         ]
     },
     "terraform-provider-time": {
-        "version": "v0.13.1",
+        "version": "v0.14.0",
         "repo": "https://github.com/hashicorp/terraform-provider-time.git",
         "build_targets": [
             [

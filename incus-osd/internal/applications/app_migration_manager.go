@@ -14,48 +14,140 @@ import (
 	"time"
 
 	mmapi "github.com/FuturFusion/migration-manager/shared/api"
+	"golang.org/x/sys/unix"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
 	"github.com/lxc/incus-os/incus-osd/internal/seed"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
+	"github.com/lxc/incus-os/incus-osd/internal/zfs"
 )
 
 type migrationManager struct {
 	common
 }
 
-func (*migrationManager) Name() string {
-	return "migration-manager"
-}
-
-// Start starts the systemd unit.
-func (*migrationManager) Start(ctx context.Context) error {
-	// Start the unit.
-	return systemd.StartUnit(ctx, "migration-manager.service")
-}
-
-// Stop stops the systemd unit.
-func (*migrationManager) Stop(ctx context.Context) error {
-	// Stop the unit.
-	return systemd.StopUnit(ctx, "migration-manager.service")
-}
-
-// Restart restarts the main systemd unit.
-func (*migrationManager) Restart(ctx context.Context) error {
-	return systemd.RestartUnit(ctx, "migration-manager.service")
-}
-
-// Update triggers restart after an application update.
-func (*migrationManager) Update(ctx context.Context) error {
-	// Reload the systemd daemon to pickup any service definition changes.
-	err := systemd.ReloadDaemon(ctx)
+// AddTrustedCertificate adds a new trusted certificate to the application.
+func (*migrationManager) AddTrustedCertificate(ctx context.Context, _ string, cert string) error {
+	// Compute the certificate's fingerprint.
+	fp, err := getCertificateFingerprint(cert)
 	if err != nil {
 		return err
 	}
 
-	// Restart the unit.
-	return systemd.RestartUnit(ctx, "migration-manager.service")
+	// Get the current security configuration.
+	body, err := doMMRequest(ctx, "http://localhost/1.0/system/security", http.MethodGet, nil)
+	if err != nil {
+		return err
+	}
+
+	sec := &mmapi.SystemSecurity{}
+
+	err = json.Unmarshal(body, sec)
+	if err != nil {
+		return err
+	}
+
+	// Check if the certificate is already trusted.
+	if slices.Contains(sec.TrustedTLSClientCertFingerprints, fp) {
+		return errors.New("client certificate is already trusted")
+	}
+
+	// Add the certificate's fingerprint to list of trusted clients.
+	sec.TrustedTLSClientCertFingerprints = append(sec.TrustedTLSClientCertFingerprints, fp)
+
+	contentJSON, err := json.Marshal(sec)
+	if err != nil {
+		return err
+	}
+
+	_, err = doMMRequest(ctx, "http://localhost/1.0/system/security", http.MethodPut, contentJSON)
+
+	return err
+}
+
+// ConfigureLocalStorage configures local storage for the application.
+func (mm *migrationManager) ConfigureLocalStorage(ctx context.Context) error {
+	// If the application isn't initialized, create a ZFS dataset for it to use.
+	if !mm.IsInitialized() {
+		err := zfs.CreateApplicationDataset(ctx, "migration-manager")
+		if err != nil {
+			return err
+		}
+	} else {
+		err := zfs.MountApplicationDataset(ctx, "migration-manager")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// FactoryReset performs a full factory reset of the application.
+func (mm *migrationManager) FactoryReset(ctx context.Context) error {
+	// Stop the application.
+	err := mm.Stop(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Wipe local configuration.
+	err = mm.WipeLocalData(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Start the application.
+	err = mm.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Perform first start initialization.
+	return mm.Initialize(ctx)
+}
+
+// GetBackup returns a tar archive backup of the application's configuration and/or state.
+func (*migrationManager) GetBackup(archive io.Writer, complete bool) error {
+	if complete {
+		return createTarArchive("/var/lib/migration-manager/", nil, archive)
+	}
+
+	return createTarArchive("/var/lib/migration-manager/", []string{"artifacts"}, archive)
+}
+
+// GetClientCertificate returns the keypair for the client certificate.
+func (mm *migrationManager) GetClientCertificate() (*tls.Certificate, error) {
+	// Migration Manager doesn't have a separate certificate it uses when contacting other servers.
+	return mm.GetServerCertificate()
+}
+
+// GetDependencies returns a list of other applications this application depends on.
+func (*migrationManager) GetDependencies() []string {
+	return nil
+}
+
+// GetServerCertificate returns the keypair for the server certificate.
+func (*migrationManager) GetServerCertificate() (*tls.Certificate, error) {
+	// Load the certificate.
+	tlsCert, err := os.ReadFile("/var/lib/migration-manager/server.crt")
+	if err != nil {
+		return nil, err
+	}
+
+	tlsKey, err := os.ReadFile("/var/lib/migration-manager/server.key")
+	if err != nil {
+		return nil, err
+	}
+
+	// Put together a keypair.
+	cert, err := tls.X509KeyPair(tlsCert, tlsKey)
+	if err != nil {
+		return nil, err
+	}
+
+	return &cert, nil
 }
 
 // Initialize runs first time initialization.
@@ -164,94 +256,9 @@ func (mm *migrationManager) Initialize(ctx context.Context) error {
 		}
 	}
 
+	mm.appState.Initialized = true
+
 	return nil
-}
-
-// IsRunning reports if the application is currently running.
-func (*migrationManager) IsRunning(ctx context.Context) bool {
-	return systemd.IsActive(ctx, "migration-manager.service")
-}
-
-// NeedsLateUpdateCheck reports if the application depends on a delayed provider update check.
-func (*migrationManager) NeedsLateUpdateCheck() bool {
-	return false
-}
-
-// GetClientCertificate returns the keypair for the client certificate.
-func (mm *migrationManager) GetClientCertificate() (*tls.Certificate, error) {
-	// Migration Manager doesn't have a separate certificate it uses when contacting other servers.
-	return mm.GetServerCertificate()
-}
-
-// GetServerCertificate returns the keypair for the server certificate.
-func (*migrationManager) GetServerCertificate() (*tls.Certificate, error) {
-	// Load the certificate.
-	tlsCert, err := os.ReadFile("/var/lib/migration-manager/server.crt")
-	if err != nil {
-		return nil, err
-	}
-
-	tlsKey, err := os.ReadFile("/var/lib/migration-manager/server.key")
-	if err != nil {
-		return nil, err
-	}
-
-	// Put together a keypair.
-	cert, err := tls.X509KeyPair(tlsCert, tlsKey)
-	if err != nil {
-		return nil, err
-	}
-
-	return &cert, nil
-}
-
-// GetDependencies returns a list of other applications this application depends on.
-func (*migrationManager) GetDependencies() []string {
-	return nil
-}
-
-// AddTrustedCertificate adds a new trusted certificate to the application.
-func (*migrationManager) AddTrustedCertificate(ctx context.Context, _ string, cert string) error {
-	// Compute the certificate's fingerprint.
-	fp, err := getCertificateFingerprint(cert)
-	if err != nil {
-		return err
-	}
-
-	// Get the current security configuration.
-	body, err := doMMRequest(ctx, "http://localhost/1.0/system/security", http.MethodGet, nil)
-	if err != nil {
-		return err
-	}
-
-	sec := &mmapi.SystemSecurity{}
-
-	err = json.Unmarshal(body, sec)
-	if err != nil {
-		return err
-	}
-
-	// Check if the certificate is already trusted.
-	if slices.Contains(sec.TrustedTLSClientCertFingerprints, fp) {
-		return errors.New("client certificate is already trusted")
-	}
-
-	// Add the certificate's fingerprint to list of trusted clients.
-	sec.TrustedTLSClientCertFingerprints = append(sec.TrustedTLSClientCertFingerprints, fp)
-
-	contentJSON, err := json.Marshal(sec)
-	if err != nil {
-		return err
-	}
-
-	_, err = doMMRequest(ctx, "http://localhost/1.0/system/security", http.MethodPut, contentJSON)
-
-	return err
-}
-
-// Migration Manager specific helper to interact with the REST API.
-func doMMRequest(ctx context.Context, url string, method string, body []byte) ([]byte, error) {
-	return doRequest(ctx, "/run/migration-manager/unix.socket", url, method, body)
 }
 
 // IsPrimary reports if the application is a primary application.
@@ -259,45 +266,106 @@ func (*migrationManager) IsPrimary() bool {
 	return true
 }
 
-// FactoryReset performs a full factory reset of the application.
-func (mm *migrationManager) FactoryReset(ctx context.Context) error {
-	// Stop the application.
-	err := mm.Stop(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Wipe local configuration.
-	err = mm.WipeLocalData()
-	if err != nil {
-		return err
-	}
-
-	// Start the application.
-	err = mm.Start(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Perform first start initialization.
-	return mm.Initialize(ctx)
+// IsRunning reports if the application is currently running.
+func (*migrationManager) IsRunning(ctx context.Context) bool {
+	return systemd.IsActive(ctx, "migration-manager.service")
 }
 
-// WipeLocalData removes local data created by the application.
-func (*migrationManager) WipeLocalData() error {
-	return os.RemoveAll("/var/lib/migration-manager/")
+func (*migrationManager) Name() string {
+	return "migration-manager"
 }
 
-// GetBackup returns a tar archive backup of the application's configuration and/or state.
-func (*migrationManager) GetBackup(archive io.Writer, complete bool) error {
-	if complete {
-		return createTarArchive("/var/lib/migration-manager/", nil, archive)
-	}
+// NeedsLateUpdateCheck reports if the application depends on a delayed provider update check.
+func (*migrationManager) NeedsLateUpdateCheck() bool {
+	// Depends on application client TLS certificate stored in ZFS dataset.
+	return true
+}
 
-	return createTarArchive("/var/lib/migration-manager/", []string{"artifacts"}, archive)
+// Restart restarts the main systemd unit.
+func (*migrationManager) Restart(ctx context.Context) error {
+	return systemd.RestartUnit(ctx, "migration-manager.service")
 }
 
 // RestoreBackup restores a tar archive backup of the application's configuration and/or state.
-func (*migrationManager) RestoreBackup(ctx context.Context, archive io.Reader) error {
-	return extractTarArchive(ctx, "/var/lib/migration-manager/", []string{"migration-manager.service"}, archive)
+func (mm *migrationManager) RestoreBackup(ctx context.Context, archive io.Reader) error {
+	err := extractTarArchive(ctx, "/var/lib/migration-manager/", []string{"migration-manager.service"}, archive)
+	if err != nil {
+		return err
+	}
+
+	// Record when the application was restored.
+	now := time.Now()
+	mm.appState.LastRestored = &now
+
+	return nil
+}
+
+// Start starts the systemd unit.
+func (mm *migrationManager) Start(ctx context.Context) error {
+	err := mm.ConfigureLocalStorage(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Start the unit.
+	return systemd.StartUnit(ctx, "migration-manager.service")
+}
+
+// Stop stops the systemd unit.
+func (*migrationManager) Stop(ctx context.Context) error {
+	// Stop the unit.
+	return systemd.StopUnit(ctx, "migration-manager.service")
+}
+
+// Update triggers restart after an application update.
+func (*migrationManager) Update(ctx context.Context) error {
+	// Reload the systemd daemon to pickup any service definition changes.
+	err := systemd.ReloadDaemon(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Restart the unit.
+	return systemd.RestartUnit(ctx, "migration-manager.service")
+}
+
+// WipeLocalData removes local data created by the application.
+func (*migrationManager) WipeLocalData(ctx context.Context) error {
+	// Unmount the dataset.
+	err := unix.Unmount("/var/lib/migration-manager/", 0)
+	if err != nil {
+		return err
+	}
+
+	// Destroy the dataset.
+	err = zfs.DestroyDataset(ctx, "local", "migration-manager", false)
+	if err != nil {
+		return err
+	}
+
+	// For good measure, remove the mount point.
+	err = os.RemoveAll("/var/lib/migration-manager/")
+	if err != nil {
+		return err
+	}
+
+	// Create a fresh dataset for the application.
+	return zfs.CreateApplicationDataset(ctx, "migration-manager")
+}
+
+// Migration Manager specific helper to interact with the REST API.
+func doMMRequest(ctx context.Context, url string, method string, body []byte) ([]byte, error) {
+	return doRequest(ctx, "/run/migration-manager/unix.socket", url, method, body)
+}
+
+func (mm *migrationManager) Get(_ context.Context) (any, error) {
+	return mm.state.Applications.MigrationManager, nil
+}
+
+func (*migrationManager) Struct() any {
+	return &api.Application{}
+}
+
+func (*migrationManager) UpdateConfig(_ context.Context, _ any) error {
+	return nil
 }

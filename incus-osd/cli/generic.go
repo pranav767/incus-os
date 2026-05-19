@@ -12,9 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lxc/incus/v6/shared/ask"
-	cli "github.com/lxc/incus/v6/shared/cmd"
-	"github.com/lxc/incus/v6/shared/termios"
+	"github.com/lxc/incus/v7/shared/ask"
+	cli "github.com/lxc/incus/v7/shared/cmd"
+	"github.com/lxc/incus/v7/shared/termios"
 	"github.com/spf13/cobra"
 	"go.yaml.in/yaml/v4"
 )
@@ -439,7 +439,14 @@ func (c *cmdGenericRun) run(cmd *cobra.Command, args []string) error {
 		if path == "-" {
 			f = os.Stdout
 		} else {
-			f, err = os.Open(args[len(args)-1])
+			_, err := os.Stat(args[len(args)-1])
+			if err == nil {
+				return errors.New("output file '" + args[len(args)-1] + "' already exists")
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+
+			f, err = os.Create(args[len(args)-1])
 			if err != nil {
 				return err
 			}

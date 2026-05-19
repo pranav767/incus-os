@@ -8,19 +8,25 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lxc/incus/v6/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/subprocess"
+
+	"github.com/lxc/incus-os/incus-osd/api"
 )
 
 type gpuSupport struct {
 	common
 }
 
-func (*gpuSupport) Name() string {
-	return "gpu-support"
+func (g *gpuSupport) Get(_ context.Context) (any, error) {
+	return g.state.Applications.GPUSupport, nil
 }
 
 func (*gpuSupport) IsRunning(_ context.Context) bool {
 	return true
+}
+
+func (*gpuSupport) Name() string {
+	return "gpu-support"
 }
 
 func (*gpuSupport) Start(ctx context.Context) error {
@@ -72,5 +78,13 @@ func (*gpuSupport) Start(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+func (*gpuSupport) Struct() any {
+	return &api.Application{}
+}
+
+func (*gpuSupport) UpdateConfig(_ context.Context, _ any) error {
 	return nil
 }

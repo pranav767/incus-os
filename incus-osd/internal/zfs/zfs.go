@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/shared/revert"
-	"github.com/lxc/incus/v6/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/revert"
+	"github.com/lxc/incus/v7/shared/subprocess"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/scheduling"
@@ -710,6 +710,10 @@ func updateZpoolHelper(ctx context.Context, zpoolName string, zpoolType string, 
 			}
 
 			if zpoolCmd == "remove" {
+				// Sleep briefly to allow the zpool state to update so the removed drive no
+				// longer appears as a member.
+				time.Sleep(500 * time.Millisecond)
+
 				err := storage.WipeDrive(ctx, actualDev, false)
 				if err != nil {
 					return err
@@ -739,9 +743,21 @@ func updateZpoolHelper(ctx context.Context, zpoolName string, zpoolType string, 
 				return err
 			}
 
-			err = storage.WipeDrive(ctx, actualDevOld, false)
-			if err != nil {
-				return err
+			if zpoolName == "local" && zpoolType == "zfs-raid1" {
+				actualDevOld = strings.TrimSuffix(actualDevOld, "-part11")
+			}
+
+			// Don't attempt to wipe a device that doesn't physically exist.
+			_, err = os.Stat(actualDevOld)
+			if err == nil {
+				// Sleep briefly to allow the zpool state to update so the replaced drive no
+				// longer appears as a member.
+				time.Sleep(500 * time.Millisecond)
+
+				err = storage.WipeDrive(ctx, actualDevOld, false)
+				if err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -1038,6 +1054,24 @@ func ScrubAllPools(ctx context.Context) error {
 
 			time.Sleep(time.Minute)
 		}
+	}
+
+	return nil
+}
+
+// CreateApplicationDataset creates an application-specific dataset in the "local" pool. The dataset is will be
+// mounted under /var/lib/, and is tagged with an "incusos:use" property.
+func CreateApplicationDataset(ctx context.Context, applicationName string) error {
+	_, err := subprocess.RunCommandContext(ctx, "zfs", "create", "-o", "mountpoint=/var/lib/"+applicationName+"/", "-o", "incusos:use="+applicationName, "local/"+applicationName)
+
+	return err
+}
+
+// MountApplicationDataset ensures that an application's dataset is mounted.
+func MountApplicationDataset(ctx context.Context, applicationName string) error {
+	_, err := subprocess.RunCommandContext(ctx, "zfs", "mount", "local/"+applicationName)
+	if err != nil && !strings.Contains(err.Error(), "filesystem already mounted") {
+		return err
 	}
 
 	return nil

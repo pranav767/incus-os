@@ -9,14 +9,18 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/lxc/incus/v6/shared/subprocess"
+	ocapi "github.com/FuturFusion/operations-center/shared/api"
+	"github.com/lxc/incus/v7/shared/subprocess"
+	"go.yaml.in/yaml/v4"
 	"golang.org/x/sys/unix"
 
 	"github.com/lxc/incus-os/incus-osd/certs"
@@ -47,30 +51,44 @@ var (
 func main() {
 	ctx := context.Background()
 
+	// Get the OS name and version from /lib/os-release.
+	osName, osRelease, err := systemd.GetCurrentRelease(ctx)
+	if err != nil {
+		tui.EarlyError("unable to get OS name and release: "+err.Error(), "Operating system")
+		os.Exit(1)
+	}
+
 	// Check privileges.
 	if os.Getuid() != 0 {
-		tui.EarlyError("incus-osd must be run as root")
+		tui.EarlyError("incus-osd must be run as root", osName)
 		os.Exit(1)
 	}
 
 	// Create runtime path if missing.
-	err := os.Mkdir(runPath, 0o700)
+	err = os.Mkdir(runPath, 0o700)
 	if err != nil && !os.IsExist(err) {
-		tui.EarlyError(err.Error())
+		tui.EarlyError(err.Error(), osName)
 		os.Exit(1)
 	}
 
 	// Create storage path if missing.
 	err = os.Mkdir(varPath, 0o700)
 	if err != nil && !os.IsExist(err) {
-		tui.EarlyError(err.Error())
+		tui.EarlyError(err.Error(), osName)
 		os.Exit(1)
 	}
 
 	// Get persistent state.
 	s, err := state.LoadOrCreate(filepath.Join(varPath, "state.txt"))
 	if err != nil {
-		tui.EarlyError("unable to load state file: " + err.Error())
+		tui.EarlyError("unable to load state file: "+err.Error(), osName)
+		os.Exit(1)
+	}
+
+	// Configure console devices with custom baud rates, if defined.
+	err = configureConsoleDevices(ctx, s)
+	if err != nil {
+		tui.EarlyError("unable to configure console baud rates: "+err.Error(), osName)
 		os.Exit(1)
 	}
 
@@ -78,27 +96,28 @@ func main() {
 	if len(s.System.Security.Config.CustomCACerts) > 0 {
 		err := util.UpdateSystemCustomCACerts(s.System.Security.Config.CustomCACerts)
 		if err != nil {
-			tui.EarlyError("unable to configure custom CA certificates: " + err.Error())
+			tui.EarlyError("unable to configure custom CA certificates: "+err.Error(), osName)
 			os.Exit(1)
 		}
 	}
 
-	// Get the OS name and version from /lib/os-release.
-	osName, osRelease, err := systemd.GetCurrentRelease(ctx)
-	if err != nil {
-		tui.EarlyError("unable to get OS name and release: " + err.Error())
-		os.Exit(1)
-	}
-
+	// Record the OS name and version in the state.
 	s.OS.Name = osName
 	s.OS.RunningRelease = osRelease
+
+	// Configure incus-agent.
+	err = configureIncusAgent(ctx, s)
+	if err != nil {
+		tui.EarlyError("unable to configure incus-agent: "+err.Error(), s.OS.Name)
+		os.Exit(1)
+	}
 
 	// Record if the system is relying on a swtpm-backed TPM.
 	s.UsingSWTPM = secureboot.GetSWTPMInUse()
 	if s.UsingSWTPM {
 		err := secureboot.BlowTrustedFuse()
 		if err != nil {
-			tui.EarlyError("unable to blow security fuse: " + err.Error())
+			tui.EarlyError("unable to blow security fuse: "+err.Error(), s.OS.Name)
 			os.Exit(1)
 		}
 	}
@@ -106,7 +125,7 @@ func main() {
 	// Record if the system has booted with Secure Boot disabled.
 	sbEnabled, err := secureboot.Enabled()
 	if err != nil {
-		tui.EarlyError("unable to check Secure Boot state: " + err.Error())
+		tui.EarlyError("unable to check Secure Boot state: "+err.Error(), s.OS.Name)
 		os.Exit(1)
 	}
 
@@ -115,18 +134,18 @@ func main() {
 	if s.SecureBootDisabled {
 		err := secureboot.BlowTrustedFuse()
 		if err != nil {
-			tui.EarlyError("unable to blow security fuse: " + err.Error())
+			tui.EarlyError("unable to blow security fuse: "+err.Error(), s.OS.Name)
 			os.Exit(1)
 		}
 	} else {
 		inAuditMode, err := secureboot.InAuditMode()
 		if err != nil {
-			tui.EarlyError("unable to check Secure Boot Audit Mode: " + err.Error())
+			tui.EarlyError("unable to check Secure Boot Audit Mode: "+err.Error(), s.OS.Name)
 			os.Exit(1)
 		}
 
 		if inAuditMode {
-			tui.EarlyError("unable to run while Secure Boot is in Audit Mode")
+			tui.EarlyError("unable to run while Secure Boot is in Audit Mode", s.OS.Name)
 			os.Exit(1)
 		}
 	}
@@ -138,7 +157,7 @@ func main() {
 	if !s.OS.SuccessfulBoot && !s.ShouldPerformInstall && s.System.Network.Config == nil {
 		err := firstBootActions(ctx)
 		if err != nil {
-			tui.EarlyError("unable to perform first boot actions: " + err.Error())
+			tui.EarlyError("unable to perform first boot actions: "+err.Error(), s.OS.Name)
 			os.Exit(1)
 		}
 	}
@@ -155,14 +174,14 @@ func main() {
 	// Get and start the console TUI.
 	tuiApp, err := tui.GetTUI(s)
 	if err != nil {
-		tui.EarlyError(err.Error())
+		tui.EarlyError(err.Error(), s.OS.Name)
 		os.Exit(1)
 	}
 
 	go func() {
 		err := tuiApp.Run()
 		if err != nil {
-			tui.EarlyError(err.Error())
+			tui.EarlyError(err.Error(), s.OS.Name)
 			os.Exit(1)
 		}
 	}()
@@ -185,12 +204,9 @@ func main() {
 
 func firstBootActions(ctx context.Context) error {
 	// Clear the "IncusOSInstallComplete" UEFI variable, if it exists.
-	_, err := subprocess.RunCommandContext(ctx, "chattr", "-i", "/sys/firmware/efi/efivars/IncusOSInstallComplete-12f075e0-2d07-493d-811a-00920a72c04c")
-	if err == nil {
-		err := os.Remove("/sys/firmware/efi/efivars/IncusOSInstallComplete-12f075e0-2d07-493d-811a-00920a72c04c")
-		if err != nil {
-			return err
-		}
+	err := secureboot.ClearIncusOSInstallComplete(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Ensure the system timezone is set properly.
@@ -267,8 +283,23 @@ func run(ctx context.Context, s *state.State) error {
 		slog.WarnContext(ctx, fmt.Sprintf("Only %.02fGiB free space available in /", freeSpace))
 	}
 
+	// Create runtime path if missing.
+	err = os.Mkdir(runPath, 0o700)
+	if err != nil && !os.IsExist(err) {
+		return err
+	}
+
+	// Setup Unix socket listener.
+	_ = os.Remove(filepath.Join(runPath, "unix.socket"))
+	lc := &net.ListenConfig{}
+
+	unixListener, err := lc.Listen(ctx, "unix", filepath.Join(runPath, "unix.socket"))
+	if err != nil {
+		return err
+	}
+
 	// Start the API.
-	server, err := rest.NewServer(ctx, s, filepath.Join(runPath, "unix.socket"))
+	server, err := rest.NewServer(ctx, s, unixListener)
 	if err != nil {
 		return err
 	}
@@ -276,7 +307,7 @@ func run(ctx context.Context, s *state.State) error {
 	chErr := make(chan error, 1)
 
 	go func() {
-		err := server.Serve(ctx)
+		err := server.Serve()
 		chErr <- err
 	}()
 
@@ -289,6 +320,12 @@ func run(ctx context.Context, s *state.State) error {
 	// Done with all initialization.
 	slog.InfoContext(ctx, "System is ready", "version", s.OS.RunningRelease)
 	s.OS.SuccessfulBoot = true
+	s.OS.SystemIsReady = true
+
+	err = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseSystemIsReady)
+	if err != nil {
+		return err
+	}
 
 	// Wait for the API to go down.
 	return <-chErr
@@ -314,16 +351,15 @@ func shutdown(ctx context.Context, s *state.State) error {
 		return err
 	}
 
-	// Run application shutdown actions.
-	for appName, appInfo := range s.Applications {
-		// Get the application.
-		app, err := applications.Load(ctx, s, appName)
-		if err != nil {
-			return err
-		}
+	apps, err := applications.GetInstalled(ctx, s)
+	if err != nil {
+		return err
+	}
 
+	// Run shutdown actions for each installed application.
+	for _, app := range apps {
 		// Stop the application.
-		slog.InfoContext(ctx, "Stopping application", "name", appName, "version", appInfo.State.Version)
+		slog.InfoContext(ctx, "Stopping application", "name", app.Name(), "version", app.Version())
 
 		err = app.Stop(ctx)
 		if err != nil {
@@ -525,9 +561,14 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 
 	migratedApps := false
 
-	for appName, appInfo := range s.Applications {
-		oldPath := filepath.Join(systemd.SystemExtensionsPath, appName+".raw")
-		newPath := filepath.Join(systemd.LocalExtensionsPath, appInfo.State.Version, appName+".raw")
+	apps, err := applications.GetInstalled(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	for _, app := range apps {
+		oldPath := filepath.Join(systemd.SystemExtensionsPath, app.Name()+".raw")
+		newPath := filepath.Join(systemd.LocalExtensionsPath, app.Version(), app.Name()+".raw")
 
 		fileStat, err := os.Lstat(oldPath)
 		if err != nil {
@@ -540,7 +581,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 
 		// Ensure /var/lib/incus-os-extensions/<version>/ exists.
-		err = os.Mkdir(filepath.Join(systemd.LocalExtensionsPath, appInfo.State.Version), 0o700)
+		err = os.Mkdir(filepath.Join(systemd.LocalExtensionsPath, app.Version()), 0o700)
 		if err != nil && !os.IsExist(err) {
 			return err
 		}
@@ -560,7 +601,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	}
 
 	if migratedApps {
-		err := systemd.RefreshExtensions(ctx, s.Applications, &s.OS)
+		err := applications.RefreshExtensions(ctx, s)
 		if err != nil {
 			return err
 		}
@@ -574,6 +615,11 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 
 	slog.InfoContext(ctx, "System is starting up", "mode", mode, "version", s.OS.RunningRelease, "machine-id", strings.TrimSuffix(machineID, "\n"))
 
+	// Create this channel early, so we don't block trying to trigger the fallback HTTPS listener.
+	// We can't move the channel processing loop here, because it depends on having a provider (and
+	// therefore potentially a network) properly configured.
+	s.TriggerFallbackListener = make(chan bool, 1)
+
 	// Display a warning if we're running with a swtpm-backed TPM.
 	if s.UsingSWTPM {
 		slog.WarnContext(ctx, "Degraded security state: no physical TPM found, using swtpm")
@@ -584,9 +630,18 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		slog.WarnContext(ctx, "Degraded security state: Secure Boot is disabled")
 	}
 
+	// Display a warning if incus-agent has ever been fully enabled.
+	if s.FullAgentEnabled {
+		slog.WarnContext(ctx, "Degraded security state: incus-agent has been fully enabled")
+	}
+
 	// Display a warning if we're running from the backup image.
 	if s.OS.RunningFromBackup() {
 		slog.WarnContext(ctx, "Booted from backup "+s.OS.Name+" image version "+s.OS.RunningRelease)
+
+		slog.WarnContext(ctx, "Will attempt to enable fallback HTTPS server for additional connectivity after completing startup tasks")
+
+		s.TriggerFallbackListener <- true
 	}
 
 	// Check for and run recovery logic if present.
@@ -629,7 +684,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		return err
 	}
 
-	err = systemd.ApplyNetworkConfiguration(ctx, s, s.System.Network.Config, 30*time.Second, s.OS.SuccessfulBoot, providers.Refresh, delayInitialUpdateCheck)
+	err = systemd.ApplyNetworkConfiguration(ctx, s, s.System.Network.Config, 30*time.Second, s.OS.SuccessfulBoot, providers.Notify, delayInitialUpdateCheck)
 	if err != nil {
 		return err
 	}
@@ -640,7 +695,40 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		return err
 	}
 
-	// Get the provider.
+	// Ensure all systemd extensions are applied.
+	err = applications.RefreshExtensions(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	// Run services startup actions. This must be done before bringing up any storage pools.
+	for _, srvName := range services.Supported(s) {
+		srv, err := services.Load(ctx, s, srvName)
+		if err != nil {
+			return err
+		}
+
+		if !srv.ShouldStart() {
+			continue
+		}
+
+		slog.InfoContext(ctx, "Starting service", "name", srvName)
+
+		err = srv.Start(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "Failed starting service", "name", srvName, "err", err)
+		}
+	}
+
+	// Ensure any locally-defined pools are available.
+	err = setupLocalStorage(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	// Get the provider. Must be done after storage pools are loaded, since the operations-center
+	// provider depends on fetching the primary application's client certificate which may be
+	// stored in a local zfs dataset.
 	var provider string
 
 	var providerConfig map[string]string
@@ -679,7 +767,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 	}
 
-	p, err := providers.Load(ctx, s)
+	p, err := providers.Load(ctx, s, false)
 	if err != nil {
 		return err
 	}
@@ -689,42 +777,28 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		update.Checker(ctx, s, p, true, false)
 	}
 
-	// Ensure all systemd extensions are applied.
-	err = systemd.RefreshExtensions(ctx, s.Applications, &s.OS)
-	if err != nil {
-		return err
-	}
-
-	// Run services startup actions. This must be done before bringing up any storage pools.
-	for _, srvName := range services.Supported(s) {
-		srv, err := services.Load(ctx, s, srvName)
-		if err != nil {
-			return err
-		}
-
-		if !srv.ShouldStart() {
-			continue
-		}
-
-		slog.InfoContext(ctx, "Starting service", "name", srvName)
-
-		err = srv.Start(ctx)
-		if err != nil {
-			slog.ErrorContext(ctx, "Failed starting service", "name", srvName, "err", err)
-		}
-	}
-
-	// Ensure any locally-defined pools are available.
-	err = setupLocalStorage(ctx, s)
-	if err != nil {
-		return err
-	}
-
 	// Run application startup actions. Must be done after storage pools are loaded.
-	for appName := range s.Applications {
-		err := applications.StartInitialize(ctx, s, appName)
+	apps, err = applications.GetInstalled(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	for _, app := range apps {
+		err := applications.StartInitialize(ctx, s, app.Name())
 		if err != nil {
-			return err
+			if !app.IsPrimary() {
+				return err
+			}
+
+			slog.ErrorContext(ctx, err.Error())
+
+			// If not running from the backup image, which automatically starts the fallback HTTPS listener,
+			// attempt to start it when the primary application has failed to start.
+			if !s.OS.RunningFromBackup() {
+				slog.WarnContext(ctx, "Primary application "+app.Name()+" failed to start; attempting to enable fallback HTTPS server for basic connectivity")
+
+				s.TriggerFallbackListener <- true
+			}
 		}
 	}
 
@@ -736,7 +810,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	// Handle registration.
 	if !s.System.Provider.State.Registered {
 		// Reload the provider following application startup (so it can fetch the certificate).
-		p, err = providers.Load(ctx, s)
+		p, err = providers.Load(ctx, s, false)
 		if err != nil {
 			return err
 		}
@@ -781,8 +855,12 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		case <-chSignal:
 		case <-s.TriggerReboot:
 			action = "reboot"
+
+			_ = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseSystemRebootTriggered)
 		case <-s.TriggerShutdown:
 			action = "shutdown"
+
+			_ = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseShutdownTriggered)
 		case <-s.TriggerSuspend:
 			action = "suspend"
 
@@ -792,6 +870,13 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 			goto waitSignal
 		case <-s.TriggerUpdate:
 			update.Checker(ctx, s, p, false, true)
+
+			goto waitSignal
+		case <-s.TriggerFallbackListener:
+			err := startFallbackListener(ctx, s)
+			if err != nil {
+				slog.ErrorContext(ctx, "Failed to start fallback HTTPS listener", "err", err)
+			}
 
 			goto waitSignal
 		}
@@ -836,13 +921,13 @@ func registerJobs(s *state.State) error {
 }
 
 func checkDelayInitialUpdate(ctx context.Context, s *state.State) (bool, error) {
-	// Check if any installed application depends on a delayed update check.
-	for appName := range s.Applications {
-		app, err := applications.Load(ctx, s, appName)
-		if err != nil {
-			return false, err
-		}
+	apps, err := applications.GetInstalled(ctx, s)
+	if err != nil {
+		return false, err
+	}
 
+	// Check if any installed application depends on a delayed update check.
+	for _, app := range apps {
 		if app.NeedsLateUpdateCheck() {
 			return true, nil
 		}
@@ -859,9 +944,7 @@ func setTimezone(ctx context.Context) error {
 	}
 
 	// Set the system's timezone from the seed data.
-	_, err = subprocess.RunCommandContext(ctx, "timedatectl", "set-timezone", config.Time.Timezone)
-
-	return err
+	return systemd.SetTimezone(ctx, config.Time)
 }
 
 func setupLocalStorage(ctx context.Context, s *state.State) error {
@@ -875,6 +958,254 @@ func setupLocalStorage(ctx context.Context, s *state.State) error {
 	err = zfs.LoadPools(ctx, s)
 	if err != nil {
 		return err
+	}
+
+	// Detect if the root drive has increased in size. If so, attempt to auto-expand
+	// the zfs "local" pool to use the additional space. systemd-repart uses zero-based
+	// indices when reporting partitions.
+	_, err = subprocess.RunCommandContext(ctx, "journalctl", "-b", "-u", "systemd-repart", "-g", "Growing existing partition 10")
+	if err == nil {
+		err := storage.ExpandLocalPool(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	apps, err := applications.GetInstalled(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	// Mount any application-specific datasets.
+	for _, app := range apps {
+		err = app.ConfigureLocalStorage(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Migrate application data for Migration Manager and Operations Center to
+	// dedicated zfs datasets. This code can be removed after June 2026.
+	_, err = os.Stat("/var/lib/migration-manager")
+	if err == nil {
+		err := migrateApplicationData(ctx, "migration-manager")
+		if err != nil {
+			return err
+		}
+	}
+
+	_, err = os.Stat("/var/lib/operations-center")
+	if err == nil {
+		err := migrateApplicationData(ctx, "operations-center")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func migrateApplicationData(ctx context.Context, applicationName string) error {
+	// Check if the application-specific dataset already exists.
+	_, err := subprocess.RunCommandContext(ctx, "zfs", "get", "mountpoint", "local/"+applicationName)
+	if err == nil {
+		return nil
+	}
+
+	slog.InfoContext(ctx, "Moving /var/lib/"+applicationName+" to dedicated dataset")
+
+	// Rename the existing application data directory.
+	err = os.Rename(filepath.Join("/var/lib/", applicationName), filepath.Join("/var/lib/", applicationName+".bak"))
+	if err != nil {
+		return err
+	}
+
+	// Create a new zfs dataset for the application.
+	err = zfs.CreateApplicationDataset(ctx, applicationName)
+	if err != nil {
+		// Attempt to restore the application's data.
+		_ = os.Rename(filepath.Join("/var/lib/", applicationName+".bak"), filepath.Join("/var/lib/", applicationName))
+
+		return err
+	}
+
+	// Move any existing application data.
+	entries, err := os.ReadDir(filepath.Join("/var/lib/", applicationName+".bak"))
+	if err != nil {
+		return err
+	}
+
+	for _, entry := range entries {
+		// os.Rename() doesn't work across file system boundaries, so just be lazy and
+		// rely on `mv`.
+		_, err := subprocess.RunCommandContext(ctx, "mv", filepath.Join("/var/lib/", applicationName+".bak", entry.Name()), filepath.Join("/var/lib/", applicationName, entry.Name()))
+		if err != nil {
+			return err
+		}
+	}
+
+	// Remove the old directory.
+	return os.RemoveAll(filepath.Join("/var/lib/", applicationName+".bak"))
+}
+
+func configureIncusAgent(ctx context.Context, s *state.State) error {
+	// Only attempt to configure incus-agent if we're running within an Incus VM.
+	_, err := os.Stat("/dev/virtio-ports/org.linuxcontainers.incus")
+	if err != nil {
+		return nil //nolint:nilerr
+	}
+
+	type agentConfig struct {
+		Features map[string]bool `yaml:"features"`
+	}
+
+	// Check if the systemd credential "fully-enable-incus-agent" is defined.
+	_, err = os.Stat("/run/credentials/@system/fully-enable-incus-agent")
+	enableAgent := err == nil
+
+	// Check if we will need to restart the incus-agent to pickup a configuration change.
+	restartAgent := false
+
+	data, err := os.ReadFile("/etc/incus-agent.yml")
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+
+		restartAgent = true
+	}
+
+	cfg := agentConfig{}
+
+	if len(data) > 0 {
+		err := yaml.Load(data, &cfg)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Set basic incus-agent capabilities.
+	if cfg.Features == nil {
+		cfg.Features = make(map[string]bool)
+	}
+
+	cfg.Features["guestapi"] = true
+	cfg.Features["mounts"] = true
+	cfg.Features["metrics"] = true
+	cfg.Features["state"] = true
+
+	// Update incus-agent configuration if needed.
+	if enableAgent {
+		if !cfg.Features["exec"] || !cfg.Features["files"] {
+			restartAgent = true
+			cfg.Features["exec"] = true
+			cfg.Features["files"] = true
+
+			// This flag will always remain true once set to indicate
+			// that incus-agent was fully enabled at some point.
+			s.FullAgentEnabled = true
+
+			err := secureboot.BlowTrustedFuse()
+			if err != nil {
+				return errors.New("unable to blow security fuse: " + err.Error())
+			}
+		}
+	} else {
+		if cfg.Features["exec"] || cfg.Features["files"] {
+			restartAgent = true
+			cfg.Features["exec"] = false
+			cfg.Features["files"] = false
+		}
+	}
+
+	// Restart incus-agent if necessary.
+	if restartAgent {
+		// Write the configuration file.
+		data, err := yaml.Dump(&cfg, yaml.V2)
+		if err != nil {
+			return err
+		}
+
+		err = os.WriteFile("/etc/incus-agent.yml", data, 0o600)
+		if err != nil {
+			return err
+		}
+
+		// Restart incus-agent.
+		err = systemd.RestartUnit(ctx, "incus-agent.service")
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func startFallbackListener(ctx context.Context, s *state.State) error {
+	// Get the primary application, requiring that it be initialized.
+	app, err := applications.GetPrimary(ctx, s, true)
+	if err != nil {
+		return err
+	}
+
+	// Get server TLS certificates from the primary application so we don't trigger potential connection security warnings.
+	serverCert, err := app.GetServerCertificate()
+	if err != nil {
+		return err
+	}
+
+	listenAddress := s.System.FallbackListener.Config.ListenAddress
+	if listenAddress == "" {
+		// If no address is configured, attempt to listen on all interfaces.
+		listenAddress = ":0"
+	}
+
+	// Setup a TCP listener on the interface(s).
+	listenConfig := net.ListenConfig{}
+
+	tcpListener, err := listenConfig.Listen(ctx, "tcp", listenAddress)
+	if err != nil {
+		return err
+	}
+
+	// Start the fallback HTTPS server.
+	server, err := rest.NewServer(ctx, s, util.NewFancyTLSListener(tcpListener, *serverCert))
+	if err != nil {
+		return err
+	}
+
+	s.System.FallbackListener.State.Active = true
+
+	slog.InfoContext(ctx, "Fallback HTTPS listener started on "+tcpListener.Addr().String())
+
+	// Listen until reboot.
+	go func() {
+		_ = server.Serve()
+	}()
+
+	return nil
+}
+
+func configureConsoleDevices(ctx context.Context, s *state.State) error {
+	// Get the kernel seed if it exists.
+	kernelSeed, err := seed.GetKernel(ctx)
+	if err != nil && !seed.IsMissing(err) {
+		return err
+	}
+
+	// If no console configuration already exists, copy any existing value from the seed.
+	if len(s.System.Kernel.Config.Console) == 0 {
+		s.System.Kernel.Config.Console = kernelSeed.Console
+	}
+
+	// Set any configured baud speeds.
+	for _, console := range s.System.Kernel.Config.Console {
+		if console.BaudRate != 0 {
+			_, err := subprocess.RunCommandContext(ctx, "/usr/bin/stty", "-F", console.Device, strconv.Itoa(console.BaudRate))
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil

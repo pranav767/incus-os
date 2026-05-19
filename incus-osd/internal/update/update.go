@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 
+	ocapi "github.com/FuturFusion/operations-center/shared/api"
+
 	"github.com/lxc/incus-os/incus-osd/internal/applications"
 	"github.com/lxc/incus-os/incus-osd/internal/providers"
 	"github.com/lxc/incus-os/incus-osd/internal/secureboot"
@@ -67,6 +69,14 @@ func Checker(ctx context.Context, s *state.State, p providers.Provider, isStartu
 				// Shouldn't be possible, we validate on update.
 				s.System.Update.State.Status = "Failed to parse update frequency"
 				slog.ErrorContext(ctx, s.System.Update.State.Status, "err", err.Error())
+
+				break
+			}
+
+			if frequency < 0 {
+				// Shouldn't be possible, we validate on update.
+				s.System.Update.State.Status = "Update frequency must be a positive value"
+				slog.ErrorContext(ctx, s.System.Update.State.Status, "err", "Update frequency must be a positive value")
 
 				break
 			}
@@ -172,7 +182,7 @@ func Checker(ctx context.Context, s *state.State, p providers.Provider, isStartu
 		if len(appsUpdated) > 0 {
 			slog.DebugContext(ctx, "Refreshing system extensions")
 
-			err := systemd.RefreshExtensions(ctx, s.Applications, &s.OS)
+			err := applications.RefreshExtensions(ctx, s)
 			if err != nil {
 				s.System.Update.State.Status = "Failed to refresh system extensions"
 				showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
@@ -223,7 +233,7 @@ func InstallUpdateApp(ctx context.Context, s *state.State, appName string, clear
 	}
 
 	// Get the provider.
-	p, err := providers.Load(ctx, s)
+	p, err := providers.Load(ctx, s, false)
 	if err != nil {
 		return err
 	}
@@ -247,7 +257,7 @@ func InstallUpdateApp(ctx context.Context, s *state.State, appName string, clear
 		// Display a post-update message.
 		HandlePostUpdateMessage(s, t, "")
 
-		err := systemd.RefreshExtensions(ctx, s.Applications, &s.OS)
+		err := applications.RefreshExtensions(ctx, s)
 		if err != nil {
 			return err
 		}
@@ -264,7 +274,7 @@ func InstallUpdateApp(ctx context.Context, s *state.State, appName string, clear
 // reloadApplication wraps common logic used when starting/updating an application after it is updated.
 func reloadApplication(ctx context.Context, s *state.State, appName string, appVersion string) error {
 	// Get the provider.
-	p, err := providers.Load(ctx, s)
+	p, err := providers.Load(ctx, s, false)
 	if err != nil {
 		return err
 	}
@@ -287,6 +297,12 @@ func reloadApplication(ctx context.Context, s *state.State, appName string, appV
 			s.System.Update.State.Status = "Failed to reload application"
 			showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
 
+			if app.IsPrimary() {
+				slog.WarnContext(ctx, "Primary application "+app.Name()+" failed to reload; attempting to enable fallback HTTPS server for basic connectivity")
+
+				s.TriggerFallbackListener <- true
+			}
+
 			return err
 		}
 	} else {
@@ -294,6 +310,12 @@ func reloadApplication(ctx context.Context, s *state.State, appName string, appV
 		if err != nil {
 			s.System.Update.State.Status = "Failed to start application"
 			showModalError(ctx, s.OS.Name, s.System.Update.State.Status, err, p)
+
+			if app.IsPrimary() {
+				slog.WarnContext(ctx, "Primary application "+app.Name()+" failed to start; attempting to enable fallback HTTPS server for basic connectivity")
+
+				s.TriggerFallbackListener <- true
+			}
 
 			return err
 		}
@@ -388,10 +410,15 @@ func CheckAndDownloadUpdate(ctx context.Context, s *state.State, t *tui.TUI, p p
 			return "", errors.New("local " + s.OS.Name + " version (" + s.OS.RunningRelease + ") is newer than available update (" + update.Version() + "); skipping")
 		}
 	case TypeApplication:
-		updateNeeded = update.Version() != s.Applications[appName].State.Version
+		app, err := applications.Load(ctx, s, appName)
+		if err != nil {
+			return "", err
+		}
 
-		if updateNeeded && s.Applications[appName].State.Version != "" && !update.IsNewerThan(s.Applications[appName].State.Version) {
-			return "", errors.New("local application " + appName + " version (" + s.Applications[appName].State.Version + ") is newer than available update (" + update.Version() + "); skipping")
+		updateNeeded = update.Version() != app.Version()
+
+		if updateNeeded && app.Version() != "" && !update.IsNewerThan(app.Version()) {
+			return "", errors.New("local application " + appName + " version (" + app.Version() + ") is newer than available update (" + update.Version() + "); skipping")
 		}
 	default:
 		// An invalid update type has been handled previously.
@@ -523,12 +550,23 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			return "", err
 		}
 
+		// Notify the provider.
+		err = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseOSUpdateApplied)
+		if err != nil {
+			return "", err
+		}
+
 		// Handle reboot if needed.
 		if s.System.Update.Config.AutoReboot || isStartupCheck {
+			err := providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseSystemRebootTriggered)
+			if err != nil {
+				return "", err
+			}
+
 			// Rather than closing s.TriggerReboot, explicitly reboot here. This is needed when
 			// applying an update via the recovery mechanism since at that point in startup
 			// the channels won't be available yet.
-			err := systemd.SystemReboot(ctx)
+			err = systemd.SystemReboot(ctx)
 			if err != nil {
 				return "", err
 			}
@@ -544,20 +582,31 @@ func applyUpdate(ctx context.Context, s *state.State, t *tui.TUI, update provide
 			return "", err
 		}
 
-		// If running from the backup IncusOS image, after verifying the new application version
-		// don't actually update to it.
-		if s.OS.RunningFromBackup() {
-			slog.WarnContext(ctx, "Successfully downloaded application update, but not auto-updating while running from backup image", "application", appName)
-
-			return "", nil
+		// Load the application
+		app, err := applications.Load(ctx, s, appName)
+		if err != nil {
+			return "", err
 		}
 
-		// Record newly installed application and save state to disk.
-		newAppInfo := s.Applications[appName]
-		newAppInfo.State.Version = update.Version()
+		// If we're updating an existing application and are running from the backup IncusOS
+		// image, after verifying the new application sysext don't automatically update to it.
+		if app.IsInstalled() && !s.System.Update.State.NeedsReboot && s.OS.RunningFromBackup() {
+			slog.WarnContext(ctx, "Successfully downloaded application update, but not auto-updating while running from backup image", "application", appName)
 
-		s.Applications[appName] = newAppInfo
-		_ = s.Save()
+			// Add the newer version to list of available versions.
+			av := app.AvailableVersions()
+			av = append(av, update.Version())
+			app.SetVersions(app.Version(), av)
+		} else {
+			// Record newly installed application and save state to disk.
+			app.SetVersions(update.Version(), nil)
+
+			// Notify the provider.
+			err = providers.Notify(ctx, s, ocapi.ServerSelfUpdateCauseApplicationUpdateApplied)
+			if err != nil {
+				return "", err
+			}
+		}
 	default:
 		// An invalid update type has been handled previously in checkDownloadUpdate().
 	}

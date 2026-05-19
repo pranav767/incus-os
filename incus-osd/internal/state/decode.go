@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -14,6 +15,7 @@ var errUnrecognizedConfigField = errors.New("unrecognized configuration field")
 // applied before decoding the state.
 func Decode(b []byte, upgradeFuncs UpgradeFuncs, s *State) error {
 	upgraded := false
+	whitespaceRegex := regexp.MustCompile(`^\s+$`)
 
 	lines := strings.Split(string(b), "\n")
 
@@ -56,7 +58,7 @@ func Decode(b []byte, upgradeFuncs UpgradeFuncs, s *State) error {
 
 	// Parse each line.
 	for _, line := range lines {
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" || whitespaceRegex.MatchString(line) || strings.HasPrefix(line, "#") {
 			continue
 		}
 
@@ -120,6 +122,10 @@ func decodeHelper(v reflect.Value, keys []string, value string) error {
 				field.Set(reflect.MakeMap(field.Type()))
 			}
 
+			if len(parts) != 2 {
+				return errUnrecognizedConfigField
+			}
+
 			decodedMapKey := strings.ReplaceAll(parts[1], "__DOT__", ".")
 
 			mapField := field.MapIndex(reflect.ValueOf(decodedMapKey))
@@ -144,6 +150,10 @@ func decodeHelper(v reflect.Value, keys []string, value string) error {
 				field.Set(reflect.New(field.Type().Elem()))
 			}
 		case reflect.Slice:
+			if len(parts) != 2 {
+				return errUnrecognizedConfigField
+			}
+
 			index, err := strconv.Atoi(parts[1])
 			if err != nil {
 				return err

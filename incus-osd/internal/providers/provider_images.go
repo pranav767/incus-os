@@ -15,7 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lxc/incus/v6/shared/osarch"
+	ocapi "github.com/FuturFusion/operations-center/shared/api"
+	"github.com/lxc/incus/v7/shared/osarch"
 
 	apiupdate "github.com/lxc/incus-os/incus-osd/api/images"
 	"github.com/lxc/incus-os/incus-osd/internal/auth"
@@ -52,6 +53,8 @@ type images struct {
 	token     string
 	client    *http.Client
 
+	ignoreSignedJSON bool // If true, don't validate JSON metadata signature, but ONLY if the request is made via HTTPS.
+
 	lastCheck    time.Time // In system's timezone.
 	latestUpdate *apiupdate.UpdateFull
 	releaseMu    sync.Mutex
@@ -64,7 +67,7 @@ func (p *images) ClearCache(_ context.Context) error {
 	return nil
 }
 
-func (p *images) RefreshRegister(_ context.Context) error {
+func (p *images) RefreshRegister(_ context.Context, _ ocapi.ServerSelfUpdateCause) error {
 	if p.token != "" {
 		return nil
 	}
@@ -231,9 +234,11 @@ func (p *images) load(_ context.Context) error {
 
 		p.serverURL = "https://images.linuxcontainers.org/os"
 
-		p.updateCA, err = GetUpdateCACert()
-		if err != nil {
-			return err
+		if !p.ignoreSignedJSON {
+			p.updateCA, err = GetUpdateCACert()
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -272,34 +277,62 @@ func (p *images) checkRelease(ctx context.Context) (*apiupdate.UpdateFull, error
 		return nil, err
 	}
 
-	// Get the latest signed index.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.serverURL+"/index.sjson", nil)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := tryRequest(p.client, req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, errors.New("server failed to return expected file")
-	}
-
-	// Validate signed index.
-	verified, err := util.VerifySMIME(ctx, p.updateCA, resp.Body)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse the update list.
 	index := &apiupdate.Index{}
 
-	err = json.NewDecoder(bytes.NewReader(verified.Bytes())).Decode(index)
-	if err != nil {
-		return nil, err
+	if !p.ignoreSignedJSON { //nolint:nestif
+		// Get the latest signed index.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.serverURL+"/index.sjson", nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := tryRequest(p.client, req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, errors.New("server failed to return expected file")
+		}
+
+		// Validate signed index.
+		verified, err := util.VerifySMIME(ctx, p.updateCA, resp.Body)
+		if err != nil {
+			return nil, err
+		}
+
+		// Parse the update list.
+		err = json.NewDecoder(bytes.NewReader(verified.Bytes())).Decode(index)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if !strings.HasPrefix(p.serverURL, "https://") {
+			return nil, errors.New("cannot disable JSON metadata verification for requests made via HTTP")
+		}
+
+		// Get the latest index.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.serverURL+"/index.json", nil)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := tryRequest(p.client, req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, errors.New("server failed to return expected file")
+		}
+
+		// Parse the update list.
+		err = json.NewDecoder(resp.Body).Decode(index)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Get the latest update for the expected channel.

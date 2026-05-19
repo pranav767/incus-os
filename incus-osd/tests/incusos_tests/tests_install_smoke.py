@@ -6,14 +6,14 @@ def TestInstallDontRemoveInstallMedia(install_image):
         "install.json": "{}"
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image) as vm:
         # Perform IncusOS install.
         vm.StartVM()
         vm.WaitAgentRunning()
-        vm.WaitExpectedLog("incus-osd", "Installing IncusOS source=/dev/disk/by-id/(usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0|scsi-0QEMU_QEMU_CD-ROM_incus_boot--media) target=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_incus_root", regex=True)
-        vm.WaitExpectedLog("incus-osd", "IncusOS was successfully installed")
+        vm.WaitExpectedLog("incus-osd", "Installing " + os_name + " source=/dev/disk/by-id/(usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0|scsi-0QEMU_QEMU_CD-ROM_incus_boot--media) target=/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_incus_root", regex=True)
+        vm.WaitExpectedLog("incus-osd", os_name + " was successfully installed")
 
         # Stop the VM post-install but don't remove install media.
         vm.StopVM()
@@ -29,13 +29,14 @@ def TestBaselineInstall(install_image):
         "install.json": "{}"
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(test_name, test_image) as vm:
-        vm.WaitSystemReady(incusos_version, source="/dev/disk/by-id/(usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0|scsi-0QEMU_QEMU_CD-ROM_incus_boot--media)")
+    with IncusTestVM(os_name, test_name, test_image) as vm:
+        vm.WaitSystemReady(os_version, source="/dev/disk/by-id/(usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0|scsi-0QEMU_QEMU_CD-ROM_incus_boot--media)")
 
-        # Shouldn't see any mention of a degraded security state
-        vm.LogDoesntContain("incus-osd", "Degraded security state:")
+        # Shouldn't see any mention of a TPM or SecureBoot degraded security state
+        vm.LogDoesntContain("incus-osd", "Degraded security state: no physical TPM found, using swtpm")
+        vm.LogDoesntContain("incus-osd", "Degraded security state: Secure Boot is disabled")
 
         # Verify that LUKS encryption is bound to PCRs 7+11+15
         result = vm.RunCommand("cryptsetup", "luksDump", "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_incus_root-part9")
@@ -52,13 +53,14 @@ def TestBaselineInstallReadonlyImage(install_image):
         "install.json": "{}"
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(test_name, test_image, readonly_install_image="true") as vm:
-        vm.WaitSystemReady(incusos_version)
+    with IncusTestVM(os_name, test_name, test_image, readonly_install_image="true") as vm:
+        vm.WaitSystemReady(os_version)
 
-        # Shouldn't see any mention of a degraded security state
-        vm.LogDoesntContain("incus-osd", "Degraded security state:")
+        # Shouldn't see any mention of a TPM or SecureBoot degraded security state
+        vm.LogDoesntContain("incus-osd", "Degraded security state: no physical TPM found, using swtpm")
+        vm.LogDoesntContain("incus-osd", "Degraded security state: Secure Boot is disabled")
 
         # Verify that LUKS encryption is bound to PCRs 7+11+15
         result = vm.RunCommand("cryptsetup", "luksDump", "/dev/disk/by-id/scsi-0QEMU_QEMU_HARDDISK_incus_root-part9")
@@ -75,15 +77,16 @@ def TestBaselineInstallNVME(install_image):
         "install.json": "{}"
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image) as vm:
         vm.SetDeviceProperty("root", "io.bus=nvme")
 
-        vm.WaitSystemReady(incusos_version, source="/dev/disk/by-id/(usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0|scsi-0QEMU_QEMU_CD-ROM_incus_boot--media)", target="/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_incus_root")
+        vm.WaitSystemReady(os_version, source="/dev/disk/by-id/(usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0|scsi-0QEMU_QEMU_CD-ROM_incus_boot--media)", target="/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_incus_root")
 
-        # Shouldn't see any mention of a degraded security state
-        vm.LogDoesntContain("incus-osd", "Degraded security state:")
+        # Shouldn't see any mention of a TPM or SecureBoot degraded security state
+        vm.LogDoesntContain("incus-osd", "Degraded security state: no physical TPM found, using swtpm")
+        vm.LogDoesntContain("incus-osd", "Degraded security state: Secure Boot is disabled")
 
         # Verify that LUKS encryption is bound to PCRs 7+11+15
         result = vm.RunCommand("cryptsetup", "luksDump", "/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_incus_root-part9")
@@ -100,15 +103,16 @@ def TestBaselineInstallNVMEReadonlyImage(install_image):
         "install.json": "{}"
     }
 
-    test_image, incusos_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(test_name, test_image, readonly_install_image="true") as vm:
+    with IncusTestVM(os_name, test_name, test_image, readonly_install_image="true") as vm:
         vm.SetDeviceProperty("root", "io.bus=nvme")
 
-        vm.WaitSystemReady(incusos_version, source="/dev/disk/by-id/usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0", target="/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_incus_root")
+        vm.WaitSystemReady(os_version, source="/dev/disk/by-id/usb-QEMU_QEMU_HARDDISK_1-0000:00:01.0:00.6-4-0:0", target="/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_incus_root")
 
-        # Shouldn't see any mention of a degraded security state
-        vm.LogDoesntContain("incus-osd", "Degraded security state:")
+        # Shouldn't see any mention of a TPM or SecureBoot degraded security state
+        vm.LogDoesntContain("incus-osd", "Degraded security state: no physical TPM found, using swtpm")
+        vm.LogDoesntContain("incus-osd", "Degraded security state: Secure Boot is disabled")
 
         # Verify that LUKS encryption is bound to PCRs 7+11+15
         result = vm.RunCommand("cryptsetup", "luksDump", "/dev/disk/by-id/nvme-QEMU_NVMe_Ctrl_incus_root-part9")

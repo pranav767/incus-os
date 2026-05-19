@@ -8,12 +8,15 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
-	incusclient "github.com/lxc/incus/v6/client"
-	incusapi "github.com/lxc/incus/v6/shared/api"
-	"github.com/lxc/incus/v6/shared/subprocess"
+	incusclient "github.com/lxc/incus/v7/client"
+	incusapi "github.com/lxc/incus/v7/shared/api"
+	"github.com/lxc/incus/v7/shared/subprocess"
 	"golang.org/x/sys/unix"
 
+	"github.com/lxc/incus-os/incus-osd/api"
 	apiseed "github.com/lxc/incus-os/incus-osd/api/seed"
 	"github.com/lxc/incus-os/incus-osd/internal/rest/response"
 	"github.com/lxc/incus-os/incus-osd/internal/seed"
@@ -29,34 +32,26 @@ type incus struct {
 	common
 }
 
-func (*incus) Name() string {
-	return "incus"
-}
+// AddTrustedCertificate adds a new trusted certificate to the application.
+func (*incus) AddTrustedCertificate(_ context.Context, name string, cert string) error {
+	// Connect to Incus.
+	c, err := incusclient.ConnectIncusUnix("", nil)
+	if err != nil {
+		return err
+	}
 
-type incusCeph struct {
-	common
-}
+	// Add the certificate.
+	req := incusapi.CertificatesPost{}
+	req.Name = name
+	req.Type = "client"
+	req.Certificate = cert
 
-func (*incusCeph) Name() string {
-	return "incus-ceph"
-}
+	err = c.CreateCertificate(req)
+	if err != nil {
+		return err
+	}
 
-// GetDependencies returns a list of other applications this application depends on.
-func (*incusCeph) GetDependencies() []string {
-	return []string{"incus"}
-}
-
-type incusLinstor struct {
-	common
-}
-
-func (*incusLinstor) Name() string {
-	return "incus-linstor"
-}
-
-// GetDependencies returns a list of other applications this application depends on.
-func (*incusLinstor) GetDependencies() []string {
-	return []string{"incus"}
+	return nil
 }
 
 // Debug runs a debug action.
@@ -89,62 +84,61 @@ func (*incus) DebugStruct() any {
 	return data
 }
 
-// Start starts all the systemd units.
-func (*incus) Start(ctx context.Context) error {
-	// Refresh the system users.
-	err := systemd.RefreshUsers(ctx)
+// FactoryReset performs a full factory reset of the application.
+func (a *incus) FactoryReset(ctx context.Context) error {
+	// Stop the application.
+	err := a.Stop(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Refresh the sysctls.
-	err = systemd.RestartUnit(ctx, "systemd-sysctl.service")
+	// Wipe local configuration.
+	err = a.WipeLocalData(ctx)
 	if err != nil {
 		return err
 	}
 
-	// Start the units.
-	return systemd.StartUnit(ctx, "incus.socket", "incus-lxcfs.service", "incus-startup.service", "incus.service")
+	// Start the application.
+	err = a.Start(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Perform first start initialization.
+	return a.Initialize(ctx)
 }
 
-// Stop stops all the systemd units.
-func (*incus) Stop(ctx context.Context) error {
-	// Trigger a clean shutdown.
-	err := systemd.StopUnit(ctx, "incus-startup.service")
-	if err != nil {
-		return err
-	}
+func (a *incus) Get(_ context.Context) (any, error) {
+	return a.state.Applications.Incus, nil
+}
 
-	// Stop the remaining units.
-	err = systemd.StopUnit(ctx, "incus.service", "incus.socket", "incus-lxcfs.service")
-	if err != nil {
-		return err
-	}
+// GetBackup returns a tar archive backup of the application's configuration and/or state.
+func (*incus) GetBackup(archive io.Writer, _ bool) error {
+	return createTarArchive("/var/lib/incus/", []string{"guestapi", "shmounts", "unix.socket"}, archive)
+}
 
+// GetClientCertificate returns the keypair for the client certificate.
+func (a *incus) GetClientCertificate() (*tls.Certificate, error) {
+	return a.getCertificate("server")
+}
+
+// GetDependencies returns a list of other applications this application depends on.
+func (*incus) GetDependencies() []string {
 	return nil
 }
 
-// Restart restarts the main systemd unit.
-func (*incus) Restart(ctx context.Context) error {
-	return systemd.RestartUnit(ctx, "incus.service")
-}
-
-// Update triggers a partial restart after an application update.
-func (*incus) Update(ctx context.Context) error {
-	// Refresh the system users.
-	err := systemd.RefreshUsers(ctx)
+// GetServerCertificate returns the keypair for the server certificate.
+func (a *incus) GetServerCertificate() (*tls.Certificate, error) {
+	cert, err := a.getCertificate("cluster")
 	if err != nil {
-		return err
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+
+		return a.getCertificate("server")
 	}
 
-	// Reload the systemd daemon to pickup any service definition changes.
-	err = systemd.ReloadDaemon(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Restart the main unit.
-	return systemd.RestartUnit(ctx, "incus.service")
+	return cert, nil
 }
 
 // Initialize runs first time initialization.
@@ -200,17 +194,9 @@ func (a *incus) Initialize(ctx context.Context) error {
 		}
 	}
 
+	a.appState.Initialized = true
+
 	return nil
-}
-
-// IsRunning reports if the application is currently running.
-func (*incus) IsRunning(ctx context.Context) bool {
-	return systemd.IsActive(ctx, "incus.service")
-}
-
-// NeedsLateUpdateCheck reports if the application depends on a delayed provider update check.
-func (*incus) NeedsLateUpdateCheck() bool {
-	return false
 }
 
 // IsPrimary reports if the application is a primary application.
@@ -218,78 +204,148 @@ func (*incus) IsPrimary() bool {
 	return true
 }
 
-// GetClientCertificate returns the keypair for the client certificate.
-func (a *incus) GetClientCertificate() (*tls.Certificate, error) {
-	return a.getCertificate("server")
+// IsRunning reports if the application is currently running.
+func (*incus) IsRunning(ctx context.Context) bool {
+	return systemd.IsActive(ctx, "incus.service")
 }
 
-// GetServerCertificate returns the keypair for the server certificate.
-func (a *incus) GetServerCertificate() (*tls.Certificate, error) {
-	cert, err := a.getCertificate("cluster")
+func (*incus) Name() string {
+	return "incus"
+}
+
+// NeedsLateUpdateCheck reports if the application depends on a delayed provider update check.
+func (*incus) NeedsLateUpdateCheck() bool {
+	return false
+}
+
+// Restart restarts the main systemd unit.
+func (*incus) Restart(ctx context.Context) error {
+	return systemd.RestartUnit(ctx, "incus.service")
+}
+
+// RestoreBackup restores a tar archive backup of the application's configuration and/or state.
+func (a *incus) RestoreBackup(ctx context.Context, archive io.Reader) error {
+	err := extractTarArchive(ctx, "/var/lib/incus/", []string{"incus-startup.service", "incus.socket", "incus.service", "incus-lxcfs.service"}, archive)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+		return err
+	}
+
+	// Record when the application was restored.
+	now := time.Now()
+	a.appState.LastRestored = &now
+
+	return nil
+}
+
+func (*incus) Struct() any {
+	return &api.ApplicationIncus{}
+}
+
+// Start starts all the systemd units.
+func (*incus) Start(ctx context.Context) error {
+	// Refresh the system users.
+	err := systemd.RefreshUsers(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Refresh the sysctls.
+	err = systemd.RestartUnit(ctx, "systemd-sysctl.service")
+	if err != nil {
+		return err
+	}
+
+	// Start the units.
+	return systemd.StartUnit(ctx, "incus.socket", "incus-lxcfs.service", "incus-startup.service", "incus.service")
+}
+
+// Stop stops all the systemd units.
+func (*incus) Stop(ctx context.Context) error {
+	// Trigger a clean shutdown.
+	err := systemd.StopUnit(ctx, "incus-startup.service")
+	if err != nil {
+		return err
+	}
+
+	// Stop the remaining units.
+	err = systemd.StopUnit(ctx, "incus.service", "incus.socket", "incus-lxcfs.service")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Update triggers a partial restart after an application update.
+func (*incus) Update(ctx context.Context) error {
+	// Refresh the system users.
+	err := systemd.RefreshUsers(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Reload the systemd daemon to pickup any service definition changes.
+	err = systemd.ReloadDaemon(ctx)
+	if err != nil {
+		return err
+	}
+
+	// Restart the main unit.
+	return systemd.RestartUnit(ctx, "incus.service")
+}
+
+func (a *incus) UpdateConfig(ctx context.Context, req any) error {
+	newState, ok := req.(*api.ApplicationIncus)
+	if !ok {
+		return fmt.Errorf("request type \"%T\" isn't expected ApplicationIncus", req)
+	}
+
+	// Update the configuration.
+	a.state.Applications.Incus.Config = newState.Config
+
+	// Update /etc/default/incus.
+	err := os.Remove("/etc/default/incus")
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	// Write LXCFS_OPTS to /etc/default/incus if needed.
+	if a.state.Applications.Incus.Config.LXCFS.CPUShares || a.state.Applications.Incus.Config.LXCFS.LoadAverage {
+		f, err := os.Create("/etc/default/incus")
+		if err != nil {
+			return err
 		}
 
-		return a.getCertificate("server")
+		defer f.Close()
+
+		args := []string{}
+
+		if a.state.Applications.Incus.Config.LXCFS.CPUShares {
+			args = append(args, "--enable-cfs")
+		}
+
+		if a.state.Applications.Incus.Config.LXCFS.LoadAverage {
+			args = append(args, "--enable-loadavg")
+		}
+
+		_, err = f.WriteString(`LXCFS_OPTS="` + strings.Join(args, " ") + "\"\n")
+		if err != nil {
+			return err
+		}
 	}
 
-	return cert, nil
-}
-
-// GetDependencies returns a list of other applications this application depends on.
-func (*incus) GetDependencies() []string {
-	return nil
-}
-
-// AddTrustedCertificate adds a new trusted certificate to the application.
-func (*incus) AddTrustedCertificate(_ context.Context, name string, cert string) error {
-	// Connect to Incus.
-	c, err := incusclient.ConnectIncusUnix("", nil)
+	// Save the state.
+	err = a.state.Save()
 	if err != nil {
 		return err
 	}
 
-	// Add the certificate.
-	req := incusapi.CertificatesPost{}
-	req.Name = name
-	req.Type = "client"
-	req.Certificate = cert
-
-	err = c.CreateCertificate(req)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// FactoryReset performs a full factory reset of the application.
-func (a *incus) FactoryReset(ctx context.Context) error {
-	// Stop the application.
-	err := a.Stop(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Wipe local configuration.
-	err = a.WipeLocalData()
-	if err != nil {
-		return err
-	}
-
-	// Start the application.
-	err = a.Start(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Perform first start initialization.
-	return a.Initialize(ctx)
+	// Restart the application.
+	return a.Update(ctx)
 }
 
 // WipeLocalData removes local data created by the application.
-func (*incus) WipeLocalData() error {
+func (*incus) WipeLocalData(_ context.Context) error {
 	// Attempt to unmount the logs directory if it exists and is mounted.
 	logsPath, err := filepath.EvalSymlinks("/var/lib/incus/logs/")
 	if err == nil && logsPath != "" {
@@ -309,17 +365,7 @@ func (*incus) WipeLocalData() error {
 	return os.RemoveAll("/var/log/incus/")
 }
 
-// GetBackup returns a tar archive backup of the application's configuration and/or state.
-func (*incus) GetBackup(archive io.Writer, _ bool) error {
-	return createTarArchive("/var/lib/incus/", []string{"guestapi", "shmounts", "unix.socket"}, archive)
-}
-
-// RestoreBackup restores a tar archive backup of the application's configuration and/or state.
-func (*incus) RestoreBackup(ctx context.Context, archive io.Reader) error {
-	return extractTarArchive(ctx, "/var/lib/incus/", []string{"incus-startup.service", "incus.socket", "incus.service", "incus-lxcfs.service"}, archive)
-}
-
-func (*incus) applyDefaults(ctx context.Context, c incusclient.InstanceServer) error {
+func (a *incus) applyDefaults(ctx context.Context, c incusclient.InstanceServer) error {
 	// Get server configuration.
 	serverConfig, serverConfigEtag, err := c.GetServer()
 	if err != nil {
@@ -426,6 +472,28 @@ func (*incus) applyDefaults(ctx context.Context, c incusclient.InstanceServer) e
 			"type":    "nic",
 			"network": "incusbr0",
 			"name":    "eth0",
+		}
+
+		// Add physical network entries for all interfaces listed with the instances role.
+		for _, iface := range a.state.System.Network.State.GetInterfaceNamesByRole(api.SystemNetworkInterfaceRoleInstances) {
+			// We only want to handle bridges.
+			_, err := os.Stat("/sys/class/net/" + iface + "/bridge/")
+			if err != nil {
+				continue
+			}
+
+			// Create the physical network in Incus.
+			err = c.CreateNetwork(incusapi.NetworksPost{
+				Name: iface,
+				Type: "physical",
+				NetworkPut: incusapi.NetworkPut{
+					Description: "Physical network interface (" + iface + ")",
+					Config:      map[string]string{"parent": iface},
+				},
+			})
+			if err != nil {
+				return err
+			}
 		}
 	}
 
