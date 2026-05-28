@@ -12,10 +12,12 @@ import (
 type Application interface { //nolint:interfacebloat
 	AddTrustedCertificate(ctx context.Context, name string, cert string) error
 	AvailableVersions() []string
+	CanBeReplaced(ctx context.Context, otherAppName string) error
 	ConfigureLocalStorage(ctx context.Context) error
 	Debug(ctx context.Context, data any) response.Response
 	DebugStruct() any
 	FactoryReset(ctx context.Context) error
+	FriendlyVersion() string
 	Get(ctx context.Context) (any, error)
 	GetBackup(archive io.Writer, complete bool) error
 	GetClientCertificate() (*tls.Certificate, error)
@@ -30,6 +32,7 @@ type Application interface { //nolint:interfacebloat
 	NeedsLateUpdateCheck() bool
 	Restart(ctx context.Context) error
 	RestoreBackup(ctx context.Context, archive io.Reader) error
+	SetFriendlyVersion(ctx context.Context) error
 	SetVersions(version string, availableVersions []string)
 	Struct() any
 	Start(ctx context.Context) error

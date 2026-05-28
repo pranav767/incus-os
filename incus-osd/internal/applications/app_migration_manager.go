@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	mmapi "github.com/FuturFusion/migration-manager/shared/api"
+	"github.com/lxc/incus/v7/shared/subprocess"
 	"golang.org/x/sys/unix"
 
 	"github.com/lxc/incus-os/incus-osd/api"
@@ -121,11 +123,6 @@ func (*migrationManager) GetBackup(archive io.Writer, complete bool) error {
 func (mm *migrationManager) GetClientCertificate() (*tls.Certificate, error) {
 	// Migration Manager doesn't have a separate certificate it uses when contacting other servers.
 	return mm.GetServerCertificate()
-}
-
-// GetDependencies returns a list of other applications this application depends on.
-func (*migrationManager) GetDependencies() []string {
-	return nil
 }
 
 // GetServerCertificate returns the keypair for the server certificate.
@@ -261,6 +258,11 @@ func (mm *migrationManager) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// IsInstalled reports whether the application has been installed.
+func (mm *migrationManager) IsInstalled() bool {
+	return isInstalled(mm.Name(), mm.appState.Version)
+}
+
 // IsPrimary reports if the application is a primary application.
 func (*migrationManager) IsPrimary() bool {
 	return true
@@ -296,6 +298,18 @@ func (mm *migrationManager) RestoreBackup(ctx context.Context, archive io.Reader
 	// Record when the application was restored.
 	now := time.Now()
 	mm.appState.LastRestored = &now
+
+	return nil
+}
+
+// SetFriendlyVersion records the friendly version.
+func (mm *migrationManager) SetFriendlyVersion(ctx context.Context) error {
+	output, err := subprocess.RunCommandContext(ctx, "migration-managerd", "--version")
+	if err != nil {
+		return err
+	}
+
+	mm.appState.FriendlyVersion = strings.TrimSuffix(output, "\n") + " [" + mm.appState.Version + "]"
 
 	return nil
 }

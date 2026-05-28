@@ -3,14 +3,18 @@ package applications
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 
 	"github.com/lxc/incus-os/incus-osd/internal/seed"
 	"github.com/lxc/incus-os/incus-osd/internal/state"
+	"github.com/lxc/incus-os/incus-osd/internal/systemd"
 )
 
 // Supported lists all supported applications.
-var Supported = []string{"debug", "gpu-support", "incus", "incus-ceph", "incus-linstor", "migration-manager", "operations-center"}
+var Supported = []string{"debug", "gpu-support", incusVersionStable, incusVersionLTS70, "incus-ceph", "incus-linstor", "migration-manager", "operations-center"}
 
 // ErrNoPrimary is returned when the system doesn't yet have a primary application.
 var ErrNoPrimary = errors.New("no primary application")
@@ -19,13 +23,20 @@ var ErrNoPrimary = errors.New("no primary application")
 func Load(_ context.Context, s *state.State, name string) (Application, error) {
 	var app Application
 
+	// Ensure the requested application is one of the known, supported ones.
+	if !slices.Contains(Supported, name) {
+		return nil, errors.New("unknown application '" + name + "'")
+	}
+
 	switch name {
 	case "debug":
 		app = &debug{common: common{state: s, appState: &s.Applications.Debug.State}}
 	case "gpu-support":
 		app = &gpuSupport{common: common{state: s, appState: &s.Applications.GPUSupport.State}}
-	case "incus":
-		app = &incus{common: common{state: s, appState: &s.Applications.Incus.State.ApplicationState}}
+	case incusVersionStable:
+		app = &incus{common: common{state: s, appState: &s.Applications.Incus.State.ApplicationState}, incusVersion: incusVersionStable}
+	case incusVersionLTS70:
+		app = &incus{common: common{state: s, appState: &s.Applications.Incus.State.ApplicationState}, incusVersion: incusVersionLTS70}
 	case "incus-ceph":
 		app = &incusCeph{common: common{state: s, appState: &s.Applications.IncusCeph.State}}
 	case "incus-linstor":
@@ -35,7 +46,7 @@ func Load(_ context.Context, s *state.State, name string) (Application, error) {
 	case "operations-center":
 		app = &operationsCenter{common: common{state: s, appState: &s.Applications.OperationsCenter.State}}
 	default:
-		return nil, errors.New("unknown application")
+		return nil, errors.New("unknown application '" + name + "'")
 	}
 
 	return app, nil
@@ -145,8 +156,23 @@ func GetInstallApplications(ctx context.Context, s *state.State) ([]string, erro
 		}
 
 		for _, dep := range app.GetDependencies() {
-			if !slices.Contains(toInstall, dep) {
-				toInstall = append(toInstall, dep)
+			// Each individual dependency is required, but some dependencies can be satisfied
+			// by more than one application, such as the incus stable or incus lts versions.
+			deps := strings.Split(dep, " OR ")
+			foundDep := false
+
+			// Check if the dependency exists in the list of applications to install.
+			for _, d := range deps {
+				if slices.Contains(toInstall, d) {
+					foundDep = true
+
+					break
+				}
+			}
+
+			// Add dependency to list of applications to install if needed.
+			if !foundDep {
+				toInstall = append(toInstall, deps[0])
 			}
 		}
 	}
@@ -155,5 +181,39 @@ func GetInstallApplications(ctx context.Context, s *state.State) ([]string, erro
 	slices.Sort(toInstall)
 	toInstall = slices.Compact(toInstall)
 
+	// Ensure that only one primary application is in the list of applications to install.
+	numPrimaryApps := 0
+
+	for _, appName := range toInstall {
+		app, err := Load(ctx, s, appName)
+		if err != nil {
+			return nil, errors.New("failed to load application '" + appName + "': " + err.Error())
+		}
+
+		if app.IsPrimary() {
+			numPrimaryApps++
+		}
+	}
+
+	if numPrimaryApps > 1 {
+		return nil, errors.New("more than one primary application present in installation list: " + strings.Join(toInstall, ", "))
+	}
+
 	return toInstall, nil
+}
+
+func isInstalled(appName string, appVersion string) bool {
+	// Not installed if no version is set.
+	if appVersion == "" {
+		return false
+	}
+
+	// Not installed if the symlink doesn't exist under /var/lib/extensions/.
+	_, err := os.Lstat(filepath.Join(systemd.SystemExtensionsPath, appName+".raw"))
+	if err != nil {
+		return false
+	}
+
+	// Check if versioned sysext image exists under /var/lib/incus-os-extensions/.
+	return sysextImageExists(appName, appVersion)
 }

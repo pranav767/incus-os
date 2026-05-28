@@ -74,7 +74,7 @@ func (p *operationsCenter) ClearCache(_ context.Context) error {
 	return nil
 }
 
-func (p *operationsCenter) RefreshRegister(ctx context.Context, cause ocapi.ServerSelfUpdateCause) error {
+func (p *operationsCenter) RefreshRegister(_ context.Context, cause ocapi.ServerSelfUpdateCause) error {
 	// Check if registered.
 	if !p.state.System.Provider.State.Registered {
 		return nil
@@ -97,16 +97,34 @@ func (p *operationsCenter) RefreshRegister(ctx context.Context, cause ocapi.Serv
 		return err
 	}
 
-	// Register.
-	_, err = p.apiRequest(ctx, http.MethodPut, "/1.0/provisioning/servers/:self", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
+	// Attempt to register. Because Operations Center might be offline during an upgrade/reboot, attempt
+	// the request a few times if it doesn't succeed. If we ultimately fail, log the failure.
+	go func(d []byte) { //nolint:contextcheck,gosec
+		privateCtx := context.Background() // Must use a local context here.
+		tries := 0
+
+		for {
+			_, err := p.apiRequest(privateCtx, http.MethodPut, "/1.0/provisioning/servers/:self", bytes.NewReader(d))
+			if err == nil {
+				break
+			}
+
+			tries++
+
+			if tries > 4 {
+				slog.WarnContext(privateCtx, "Failed to refresh Operations Center registration", "err", err)
+
+				break
+			}
+
+			time.Sleep(30 * time.Second)
+		}
+	}(data)
 
 	return nil
 }
 
-func (p *operationsCenter) Register(ctx context.Context, _ bool) error {
+func (p *operationsCenter) Register(ctx context.Context) error {
 	// Get the management address.
 	mgmtAddr := p.state.System.Network.State.GetInterfaceAddressByRole(api.SystemNetworkInterfaceRoleManagement)
 	if mgmtAddr == nil {
@@ -160,7 +178,12 @@ func (p *operationsCenter) Register(ctx context.Context, _ bool) error {
 		}
 	}
 
-	return nil
+	// Log our successful registration and save state.
+	slog.InfoContext(ctx, "Server successfully registered with the 'operations-center' provider")
+
+	p.state.System.Provider.State.Registered = true
+
+	return p.state.Save()
 }
 
 func (*operationsCenter) Deregister(_ context.Context) error {
@@ -244,7 +267,7 @@ func (p *operationsCenter) GetApplicationUpdate(ctx context.Context, name string
 	found := false
 
 	for _, file := range latestUpdate.Files {
-		if file.Component == name && file.Type == string(apiupdate.UpdateFileTypeApplication) {
+		if filepath.Base(file.Filename) == name+".raw.gz" && file.Type == string(apiupdate.UpdateFileTypeApplication) {
 			found = true
 
 			break
@@ -595,7 +618,7 @@ func (a *operationsCenterApplication) Download(ctx context.Context, targetPath s
 
 	for _, file := range a.latestUpdate.Files {
 		// Only select the desired applications.
-		if file.Component != a.name || file.Type != string(apiupdate.UpdateFileTypeApplication) {
+		if filepath.Base(file.Filename) != a.name+".raw.gz" || file.Type != string(apiupdate.UpdateFileTypeApplication) {
 			continue
 		}
 

@@ -11,9 +11,11 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"time"
 
 	ocapi "github.com/FuturFusion/operations-center/shared/api/system"
+	"github.com/lxc/incus/v7/shared/subprocess"
 	"golang.org/x/sys/unix"
 
 	"github.com/lxc/incus-os/incus-osd/api"
@@ -129,11 +131,6 @@ func (oc *operationsCenter) GetClientCertificate() (*tls.Certificate, error) {
 	return oc.GetServerCertificate()
 }
 
-// GetDependencies returns a list of other applications this application depends on.
-func (*operationsCenter) GetDependencies() []string {
-	return nil
-}
-
 // GetServerCertificate returns the keypair for the server certificate.
 func (*operationsCenter) GetServerCertificate() (*tls.Certificate, error) {
 	// Load the certificate.
@@ -189,6 +186,25 @@ func (oc *operationsCenter) Initialize(ctx context.Context) error {
 		}
 
 		time.Sleep(500 * time.Millisecond)
+	}
+
+	// Apply SystemSettings, if any.
+	if ocSeed.Preseed.SystemSettings == nil {
+		ocSeed.Preseed.SystemSettings = new(ocapi.SettingsPut)
+	}
+
+	{
+		if *ocSeed.Preseed.SystemSettings != (ocapi.SettingsPut{}) {
+			contentJSON, err := json.Marshal(ocSeed.Preseed.SystemSettings)
+			if err != nil {
+				return err
+			}
+
+			_, err = doOCRequest(ctx, "http://localhost/1.0/system/settings", http.MethodPut, contentJSON)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	// Apply SystemCertificate, if any.
@@ -282,6 +298,11 @@ func (oc *operationsCenter) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// IsInstalled reports whether the application has been installed.
+func (oc *operationsCenter) IsInstalled() bool {
+	return isInstalled(oc.Name(), oc.appState.Version)
+}
+
 // IsPrimary reports if the application is a primary application.
 func (*operationsCenter) IsPrimary() bool {
 	return true
@@ -319,6 +340,18 @@ func (oc *operationsCenter) RestoreBackup(ctx context.Context, archive io.Reader
 	// Record when the application was restored.
 	now := time.Now()
 	oc.appState.LastRestored = &now
+
+	return nil
+}
+
+// SetFriendlyVersion records the friendly version.
+func (oc *operationsCenter) SetFriendlyVersion(ctx context.Context) error {
+	output, err := subprocess.RunCommandContext(ctx, "operations-centerd", "--version")
+	if err != nil {
+		return err
+	}
+
+	oc.appState.FriendlyVersion = strings.TrimSuffix(output, "\n") + " [" + oc.appState.Version + "]"
 
 	return nil
 }

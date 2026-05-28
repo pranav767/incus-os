@@ -66,7 +66,7 @@ func UninstallApplication(ctx context.Context, s *state.State, name string) erro
 		s.Applications.Debug = api.Application{}
 	case "gpu-support":
 		s.Applications.GPUSupport = api.Application{}
-	case "incus":
+	case incusVersionStable, incusVersionLTS70:
 		s.Applications.Incus = api.ApplicationIncus{}
 	case "incus-ceph":
 		s.Applications.IncusCeph = api.Application{}
@@ -99,7 +99,7 @@ func StartInitialize(ctx context.Context, s *state.State, appName string) error 
 	}
 
 	// Start the application.
-	slog.InfoContext(ctx, "Starting application", "name", appName, "version", app.Version())
+	slog.InfoContext(ctx, "Starting application", "name", appName, "version", app.FriendlyVersion())
 
 	err = app.Start(ctx)
 	if err != nil {
@@ -108,7 +108,7 @@ func StartInitialize(ctx context.Context, s *state.State, appName string) error 
 
 	// Run initialization if needed.
 	if !app.IsInitialized() { //nolint:nestif
-		slog.InfoContext(ctx, "Initializing application", "name", appName, "version", app.Version())
+		slog.InfoContext(ctx, "Initializing application", "name", appName, "version", app.FriendlyVersion())
 
 		err = app.Initialize(ctx)
 		if err != nil {
@@ -207,12 +207,16 @@ func unixHTTPClient(socketPath string) (*http.Client, error) {
 
 // Common helper for performing REST API calls.
 func doRequest(ctx context.Context, socket string, url string, method string, body []byte) ([]byte, error) {
+	// Set a limit of five seconds for the request to complete.
+	ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
 	client, err := unixHTTPClient(socket)
 	if err != nil {
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctxTimeout, method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

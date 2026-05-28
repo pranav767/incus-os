@@ -28,6 +28,11 @@ func (a *common) AvailableVersions() []string {
 	return a.appState.AvailableVersions
 }
 
+// CanBeReplaced checks if it is possible to replace the installed application with an equivalent one.
+func (*common) CanBeReplaced(_ context.Context, _ string) error {
+	return errors.New("not supported")
+}
+
 // ConfigureLocalStorage configures local storage for the application.
 func (*common) ConfigureLocalStorage(_ context.Context) error {
 	return nil
@@ -48,6 +53,11 @@ func (*common) DebugStruct() any {
 // FactoryReset performs a full factory reset of the application.
 func (*common) FactoryReset(_ context.Context) error {
 	return errors.New("not supported")
+}
+
+// FriendlyVersion returns the friendly version of the application.
+func (a *common) FriendlyVersion() string {
+	return a.appState.FriendlyVersion
 }
 
 // GetBackup returns a tar archive backup of the application's configuration and/or state.
@@ -79,11 +89,6 @@ func (a *common) Initialize(_ context.Context) error {
 	a.appState.Initialized = true
 
 	return nil
-}
-
-// IsInstalled reports whether the application has been installed.
-func (a *common) IsInstalled() bool {
-	return a.appState.Version != ""
 }
 
 // IsInitialized reports whether the application has been initialized.

@@ -3,11 +3,14 @@ package providers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -24,7 +27,10 @@ import (
 	"github.com/lxc/incus-os/incus-osd/internal/util"
 )
 
+var imageRegisterMu sync.Mutex
+
 type imagesAuthenticatedTransport struct {
+	authParam bool
 	machineID string
 }
 
@@ -34,7 +40,13 @@ func (t *imagesAuthenticatedTransport) RoundTrip(req *http.Request) (*http.Respo
 		return nil, err
 	}
 
-	req.Header.Set("X-IncusOS-Authentication", authToken)
+	if t.authParam {
+		q := req.URL.Query()
+		q.Set("token", authToken)
+		req.URL.RawQuery = q.Encode()
+	} else {
+		req.Header.Set("X-IncusOS-Authentication", authToken)
+	}
 
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -50,6 +62,7 @@ type images struct {
 
 	serverURL string
 	updateCA  string
+	authParam bool
 	token     string
 	client    *http.Client
 
@@ -75,8 +88,20 @@ func (p *images) RefreshRegister(_ context.Context, _ ocapi.ServerSelfUpdateCaus
 	return ErrRegistrationUnsupported
 }
 
-func (p *images) Register(ctx context.Context, _ bool) error {
-	if p.token != "" {
+func (p *images) Register(ctx context.Context) error {
+	// Nothing to do if currently registered.
+	if p.state.System.Provider.State.Registered {
+		return nil
+	}
+
+	if p.token != "" { //nolint:nestif
+		// Prevent concurent registration attempts.
+		// The image provider triggers Register on load, so it's
+		// possible/likely that we get two concurrent registration attempts during
+		// first boot.
+		imageRegisterMu.Lock()
+		defer imageRegisterMu.Unlock()
+
 		// Register our TPM public key with the image server.
 		// This is then used to validate authentication headers.
 		machineID, err := p.state.MachineID()
@@ -95,12 +120,30 @@ func (p *images) Register(ctx context.Context, _ bool) error {
 		}
 
 		// Prepare the request.
-		r, err := http.NewRequestWithContext(ctx, http.MethodPost, p.serverURL+"/register", bytes.NewReader(reqBody))
-		if err != nil {
-			return errors.New("unable to create http request: " + err.Error())
+		var r *http.Request
+
+		if p.authParam {
+			u, err := url.Parse(p.serverURL + "/register")
+			if err != nil {
+				return err
+			}
+
+			q := u.Query()
+			q.Set("registration", base64.RawURLEncoding.EncodeToString(reqBody))
+			u.RawQuery = q.Encode()
+
+			r, err = http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+			if err != nil {
+				return errors.New("unable to create http request: " + err.Error())
+			}
+		} else {
+			r, err = http.NewRequestWithContext(ctx, http.MethodPost, p.serverURL+"/register", bytes.NewReader(reqBody))
+			if err != nil {
+				return errors.New("unable to create http request: " + err.Error())
+			}
 		}
 
-		// Get a reader for the release asset.
+		// Send the request.
 		resp, err := p.client.Do(r)
 		if err != nil {
 			return errors.New("unable to get http register response: " + err.Error())
@@ -110,18 +153,39 @@ func (p *images) Register(ctx context.Context, _ bool) error {
 
 		// Check the response.
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("bad HTTP response code for registration: %d", resp.StatusCode)
+			switch resp.StatusCode {
+			case http.StatusBadRequest:
+				// The remote server should provide an error to return.
+				b, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return err
+				}
+
+				return errors.New(string(b))
+			default:
+				return fmt.Errorf("bad HTTP response code for registration: %d", resp.StatusCode)
+			}
 		}
 
-		return nil
+		// Log our successful registration and save state.
+		slog.InfoContext(ctx, "Server successfully registered with the 'images' provider")
+
+		p.state.System.Provider.State.Registered = true
+
+		return p.state.Save()
 	}
 
 	// No registration with the images provider.
 	return ErrRegistrationUnsupported
 }
 
-func (*images) Deregister(_ context.Context) error {
-	return nil
+func (p *images) Deregister(ctx context.Context) error {
+	// Log our successful deregistration and save state.
+	slog.InfoContext(ctx, "Server successfully deregistered from the 'images' provider")
+
+	p.state.System.Provider.State.Registered = false
+
+	return p.state.Save()
 }
 
 func (*images) Type() string {
@@ -200,7 +264,7 @@ func (p *images) GetApplicationUpdate(ctx context.Context, name string) (Applica
 	found := false
 
 	for _, file := range latestUpdate.Files {
-		if string(file.Component) == name && file.Type == apiupdate.UpdateFileTypeApplication {
+		if filepath.Base(file.Filename) == name+".raw.gz" && file.Type == apiupdate.UpdateFileTypeApplication {
 			found = true
 
 			break
@@ -221,24 +285,26 @@ func (p *images) GetApplicationUpdate(ctx context.Context, name string) (Applica
 	return &app, nil
 }
 
-func (p *images) load(_ context.Context) error {
+func (p *images) load(ctx context.Context) error {
 	// Set up the configuration.
 	p.serverURL = p.state.System.Provider.Config.Config["server_url"]
 	p.updateCA = p.state.System.Provider.Config.Config["update_ca"]
+	p.authParam = strings.ToLower(p.state.System.Provider.Config.Config["authentication_by_query_param"]) == "true"
 	p.token = p.state.System.Provider.Config.Config["token"]
 	p.client = http.DefaultClient
 
-	// Basic validation.
+	// Set default server URL if not configured.
 	if p.serverURL == "" {
+		p.serverURL = "https://images.linuxcontainers.org/os"
+	}
+
+	// Set default update CA if not configured.
+	if p.updateCA == "" && !p.ignoreSignedJSON {
 		var err error
 
-		p.serverURL = "https://images.linuxcontainers.org/os"
-
-		if !p.ignoreSignedJSON {
-			p.updateCA, err = GetUpdateCACert()
-			if err != nil {
-				return err
-			}
+		p.updateCA, err = GetUpdateCACert()
+		if err != nil {
+			return err
 		}
 	}
 
@@ -251,10 +317,18 @@ func (p *images) load(_ context.Context) error {
 
 		transport := &imagesAuthenticatedTransport{
 			machineID: machineID,
+			authParam: p.authParam,
 		}
 
 		p.client = &http.Client{
 			Transport: transport,
+		}
+
+		// The images provider can register immediately, since no local application state
+		// needs to be updated post-registration.
+		err = p.Register(ctx)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -424,7 +498,7 @@ func (a *imagesApplication) Download(ctx context.Context, targetPath string, pro
 
 	for _, file := range a.latestUpdate.Files {
 		// Only select the desired applications.
-		if string(file.Component) != a.name || file.Type != apiupdate.UpdateFileTypeApplication {
+		if filepath.Base(file.Filename) != a.name+".raw.gz" || file.Type != apiupdate.UpdateFileTypeApplication {
 			continue
 		}
 

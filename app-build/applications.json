@@ -12,7 +12,7 @@
         ]
     },
     "edk2": {
-        "version": "edk2-stable202602",
+        "version": "edk2-stable202605",
         "repo": "https://github.com/tianocore/edk2",
         "submodules": true,
         "build_targets": [],
@@ -48,7 +48,7 @@
         ]
     },
     "lego": {
-        "version": "v5.0.4",
+        "version": "v5.1.0",
         "repo": "https://github.com/go-acme/lego.git",
         "build_targets": [
             [
@@ -70,7 +70,7 @@
         ]
     },
     "linux-firmware-base": {
-        "version": "20260410",
+        "version": "20260519",
         "repo": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware.git",
         "directory": "linux-firmware",
         "build_targets": [],
@@ -90,7 +90,7 @@
         ]
     },
     "linux-firmware-gpu": {
-        "version": "20260410",
+        "version": "20260519",
         "repo": "https://kernel.googlesource.com/pub/scm/linux/kernel/git/firmware/linux-firmware.git",
         "directory": "linux-firmware",
         "build_targets": [],
@@ -121,11 +121,12 @@
             "usr/lib/firmware/i915",
             "usr/lib/firmware/intel/vpu",
             "usr/lib/firmware/nvidia",
-            "usr/lib/firmware/xe"
+            "usr/lib/firmware/xe",
+            "usr/lib/firmware/linux-firmware-gpu-version"
         ]
     },
     "migration-manager": {
-        "version": "v0.6.10",
+        "version": "v0.6.12",
         "repo": "https://github.com/FuturFusion/migration-manager.git",
         "build_targets": [
             [
@@ -164,7 +165,7 @@
         ]
     },
     "netbird": {
-        "version": "v0.71.2",
+        "version": "v0.71.4",
         "repo": "https://github.com/netbirdio/netbird.git",
         "build_targets": [
             [
@@ -184,7 +185,7 @@
         ]
     },
     "opentofu": {
-        "version": "v1.12.0",
+        "version": "v1.12.1",
         "repo": "https://github.com/opentofu/opentofu.git",
         "build_targets": [
             [
@@ -202,7 +203,7 @@
         ]
     },
     "operations-center": {
-        "version": "v0.6.2",
+        "version": "v0.6.9",
         "repo": "https://github.com/FuturFusion/operations-center.git",
         "build_targets": [
             [
@@ -234,7 +235,7 @@
         ]
     },
     "tailscale": {
-        "version": "v1.98.2",
+        "version": "v1.98.3",
         "repo": "https://github.com/tailscale/tailscale.git",
         "build_targets": [
             [

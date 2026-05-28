@@ -21,12 +21,29 @@ func (g *gpuSupport) Get(_ context.Context) (any, error) {
 	return g.state.Applications.GPUSupport, nil
 }
 
+// IsInstalled reports whether the application has been installed.
+func (g *gpuSupport) IsInstalled() bool {
+	return isInstalled(g.Name(), g.appState.Version)
+}
+
 func (*gpuSupport) IsRunning(_ context.Context) bool {
 	return true
 }
 
 func (*gpuSupport) Name() string {
 	return "gpu-support"
+}
+
+// SetFriendlyVersion records the friendly version.
+func (g *gpuSupport) SetFriendlyVersion(_ context.Context) error {
+	version, err := os.ReadFile("/usr/lib/firmware/linux-firmware-gpu-version")
+	if err != nil {
+		return err
+	}
+
+	g.appState.FriendlyVersion = string(version) + " [" + g.appState.Version + "]"
+
+	return nil
 }
 
 func (*gpuSupport) Start(ctx context.Context) error {

@@ -359,7 +359,7 @@ func shutdown(ctx context.Context, s *state.State) error {
 	// Run shutdown actions for each installed application.
 	for _, app := range apps {
 		// Stop the application.
-		slog.InfoContext(ctx, "Stopping application", "name", app.Name(), "version", app.Version())
+		slog.InfoContext(ctx, "Stopping application", "name", app.Name(), "version", app.FriendlyVersion())
 
 		err = app.Stop(ctx)
 		if err != nil {
@@ -535,6 +535,25 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 				if err != nil {
 					slog.WarnContext(ctx, "Unable to activate encrypted swap partition")
 				}
+			}
+		}
+	}
+
+	// Remove an accidental install of the incus-lts-7.0 application. This only affected
+	// a few versions of IncusOS, but one was promoted to the stable channel for a short
+	// while. This cleanup can be removed in early June 2026.
+
+	// Check if the "incus" application is present. If so, opportunistically remove any
+	// "incus-lts-7.0" sysext images or symlink that may exist. Only one version of Incus
+	// can be installed, and the LTS version being present is an accident.
+	_, err = os.Stat(filepath.Join(systemd.SystemExtensionsPath, "incus.raw"))
+	if err == nil {
+		_ = os.Remove(filepath.Join(systemd.SystemExtensionsPath, "incus-lts-7.0.raw"))
+
+		versions, err := os.ReadDir(systemd.LocalExtensionsPath)
+		if err == nil {
+			for _, version := range versions {
+				_ = os.Remove(filepath.Join(systemd.LocalExtensionsPath, version.Name(), "incus-lts-7.0.raw"))
 			}
 		}
 	}
@@ -816,16 +835,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		}
 
 		// Register with the provider.
-		err = p.Register(ctx, true)
+		err = p.Register(ctx)
 		if err != nil && !errors.Is(err, providers.ErrRegistrationUnsupported) {
 			return err
-		}
-
-		if err == nil {
-			slog.InfoContext(ctx, "Server registered with the provider")
-
-			s.System.Provider.State.Registered = true
-			_ = s.Save()
 		}
 	}
 
