@@ -6,6 +6,7 @@ import json
 import os
 import requests
 import shutil
+import subprocess
 import urllib.request
 
 from incusos_tests import IncusOSTests
@@ -16,8 +17,18 @@ current_release = None
 prior_stable_release = None
 urls = []
 
+# Check that expected commands are available before running any tests
+for cmd in ["curl", "gdisk", "go", "mkfs.vfat", "mcopy", "mdeltree", "mkisofs", "openssl", "truncate"]:
+    try:
+        subprocess.run(["which", cmd], env={"PATH": "/usr/bin:/usr/sbin"}, capture_output=True, check=True)
+    except:
+        print("Missing command: " + cmd)
+        exit(1)
+
+IMAGES_SERVER = os.getenv("IMAGES_SERVER", "https://images.linuxcontainers.org")
+
 # Fetch the current and prior stable release information
-with urllib.request.urlopen("https://images.linuxcontainers.org/os/index.json") as url:
+with urllib.request.urlopen(IMAGES_SERVER + "/os/index.json") as url:
     versions = json.loads(url.read().decode())
 
     current_stable_release_version = ""
@@ -39,12 +50,12 @@ with urllib.request.urlopen("https://images.linuxcontainers.org/os/index.json") 
     for file in current_release["files"]:
         if file["architecture"] == "x86_64":
             if file["type"] == "image-raw" or file["type"] == "image-iso":
-                urls.append("https://images." + current_release["origin"] + "/os" + current_release["url"] + "/" + file["filename"])
+                urls.append(IMAGES_SERVER + "/os" + current_release["url"] + "/" + file["filename"])
 
     for file in prior_stable_release["files"]:
         if file["architecture"] == "x86_64":
             if file["type"] == "image-raw":
-                urls.append("https://images." + prior_stable_release["origin"] + "/os" + prior_stable_release["url"] + "/" + file["filename"])
+                urls.append(IMAGES_SERVER + "/os" + prior_stable_release["url"] + "/" + file["filename"])
 
 # Download images if needed
 for url in urls:

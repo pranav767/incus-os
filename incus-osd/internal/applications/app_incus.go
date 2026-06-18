@@ -278,8 +278,8 @@ func (*incus) Restart(ctx context.Context) error {
 }
 
 // RestoreBackup restores a tar archive backup of the application's configuration and/or state.
-func (a *incus) RestoreBackup(ctx context.Context, archive io.Reader) error {
-	err := extractTarArchive(ctx, "/var/lib/incus/", []string{"incus-startup.service", "incus.socket", "incus.service", "incus-lxcfs.service"}, archive)
+func (a *incus) RestoreBackup(archive io.Reader) error {
+	err := extractTarArchive("/var/lib/incus/", []string{"incus-startup.service", "incus.socket", "incus.service", "incus-lxcfs.service"}, archive)
 	if err != nil {
 		return err
 	}
@@ -317,6 +317,12 @@ func (*incus) Start(ctx context.Context) error {
 
 	// Refresh the sysctls.
 	err = systemd.RestartUnit(ctx, "systemd-sysctl.service")
+	if err != nil {
+		return err
+	}
+
+	// Make sure br_netfilter is loaded (for proxy and forwards).
+	_, err = subprocess.RunCommandContext(ctx, "modprobe", "br_netfilter")
 	if err != nil {
 		return err
 	}

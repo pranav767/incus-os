@@ -117,13 +117,21 @@ func (*common) Restart(_ context.Context) error {
 }
 
 // RestoreBackup restores a tar archive backup of the application's configuration and/or state.
-func (*common) RestoreBackup(_ context.Context, _ io.Reader) error {
+func (*common) RestoreBackup(_ io.Reader) error {
 	return errors.New("not supported")
 }
 
 // Start runs startup action.
 func (*common) Start(_ context.Context) error {
 	return nil
+}
+
+// StartupWeight defines a non-primary application's startup weight.
+// Negative values will cause the application to start before the primary,
+// while positive values will be started after. An application with a
+// smaller weight is started before applications with larger weights.
+func (*common) StartupWeight() int {
+	return -1
 }
 
 // SetVersions sets the actual and available versions for the application.

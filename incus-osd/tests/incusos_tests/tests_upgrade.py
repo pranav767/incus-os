@@ -10,9 +10,9 @@ def TestBaselineUpgrade(install_image):
         "install.json": "{}"
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         # Perform IncusOS install.
         vm.StartVM()
         vm.WaitAgentRunning()
@@ -44,12 +44,12 @@ def TestBaselineUpgradeOSOnly(install_image):
     test_name = "baseline-upgrade-os-only"
     test_seed = {
         "install.json": "{}",
-        "provider.json": """{"name":"local"}"""
+        "provider.json": """{"name":"debug"}"""
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         # Perform IncusOS install.
         vm.StartVM()
         vm.WaitAgentRunning()
@@ -70,12 +70,14 @@ def TestBaselineUpgradeOSOnly(install_image):
         vm.LogDoesntContain("incus-osd", "Downloading OS update")
         vm.LogDoesntContain("incus-osd", "Downloading application update")
 
+        IMAGES_SERVER = os.getenv("IMAGES_SERVER", "https://images.linuxcontainers.org")
+
         # Now that we've started up, switch the provider back to the main "images" and check for an OS update.
-        result = vm.APIRequest("/1.0/system/provider", method="PUT", body="""{"config":{"name":"images"}}""")
+        result = vm.APIRequest("/1.0/system/provider", method="PUT", body='{"config":{"name":"images","config":{"server_url":"' + IMAGES_SERVER + '/os"}}}', use_unix_socket=True)
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
-        result = vm.APIRequest("/1.0/system/update/:check", method="POST", body="""{"os_only":true}""")
+        result = vm.APIRequest("/1.0/system/update/:check", method="POST", body="""{"os_only":true}""", use_unix_socket=True)
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
@@ -92,12 +94,12 @@ def TestBaselineUpgradeApplicationOnly(install_image):
     test_name = "baseline-upgrade-application-only"
     test_seed = {
         "install.json": "{}",
-        "provider.json": """{"name":"local"}"""
+        "provider.json": """{"name":"debug"}"""
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         # Perform IncusOS install.
         vm.StartVM()
         vm.WaitAgentRunning()
@@ -120,15 +122,15 @@ def TestBaselineUpgradeApplicationOnly(install_image):
 
                 vm.StartVM()
                 vm.WaitAgentRunning()
-                vm.WaitExpectedLog("incus-osd", "Auto-generating encryption recovery key, this may take a few seconds")
-                vm.WaitExpectedLog("incus-osd", "Upgrading LUKS TPM PCR bindings, this may take a few seconds")
                 vm.WaitExpectedLog("incus-osd", "Recovery partition detected")
                 vm.WaitExpectedLog("incus-osd", "Update metadata detected, verifying signature")
                 vm.WaitExpectedLog("incus-osd", "Processing validated update metadata version="+os_version)
                 vm.WaitExpectedLog("incus-osd", "Decompressing and verifying each update file")
                 vm.WaitExpectedLog("incus-osd", "Skipping missing file: 'x86_64/debug.raw.gz")
-                vm.WaitExpectedLog("incus-osd", "Downloading application update application=incus version="+os_version)
+                vm.WaitExpectedLog("incus-osd", "Downloading application update application=incus channel=stable version="+os_version)
                 vm.WaitExpectedLog("incus-osd", "Recovery actions completed")
+                vm.WaitExpectedLog("incus-osd", "Auto-generating encryption recovery key, this may take a few seconds")
+                vm.WaitExpectedLog("incus-osd", "Upgrading LUKS TPM PCR bindings, this may take a few seconds")
                 vm.WaitExpectedLog("incus-osd", "Bringing up the network")
                 vm.WaitExpectedLog("incus-osd", "Starting application name=incus version=.+ \\["+os_version+"\\]", regex=True)
                 vm.WaitExpectedLog("incus-osd", "Initializing application name=incus version=.+ \\["+os_version+"\\]", regex=True)
@@ -136,8 +138,10 @@ def TestBaselineUpgradeApplicationOnly(install_image):
 
                 vm.LogDoesntContain("incus-osd", "Downloading OS update")
 
+                IMAGES_SERVER = os.getenv("IMAGES_SERVER", "https://images.linuxcontainers.org")
+
                 # Now that we've started up, switch the provider back to the main "images" and check for an application update.
-                result = vm.APIRequest("/1.0/system/provider", method="PUT", body="""{"config":{"name":"images"}}""")
+                result = vm.APIRequest("/1.0/system/provider", method="PUT", body='{"config":{"name":"images","config":{"server_url":"' + IMAGES_SERVER + '/os"}}}')
                 if result["status_code"] != 200:
                     raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
@@ -145,7 +149,7 @@ def TestBaselineUpgradeApplicationOnly(install_image):
                 if result["status_code"] != 200:
                     raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
-                match = vm.WaitExpectedLog("incus-osd", "Downloading application update application=incus version=((?!" + os_version + ")\\d+)", regex=True)
+                match = vm.WaitExpectedLog("incus-osd", "Downloading application update application=incus channel=stable version=((?!" + os_version + ")\\d+)", regex=True)
                 new_version = match.group(1)
                 vm.WaitExpectedLog("incus-osd", "Reloading application name=incus version="+new_version)
 

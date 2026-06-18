@@ -362,6 +362,9 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 		case assetName == "migration-manager.raw.gz":
 			assetComponent = apiupdate.UpdateFileComponentMigrationManager
 			assetType = apiupdate.UpdateFileTypeApplication
+		case assetName == "openfga.raw.gz":
+			assetComponent = apiupdate.UpdateFileComponentOpenFGA
+			assetType = apiupdate.UpdateFileTypeApplication
 		case assetName == "operations-center.raw.gz":
 			assetComponent = apiupdate.UpdateFileComponentOperationsCenter
 			assetType = apiupdate.UpdateFileTypeApplication
@@ -383,6 +386,9 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 		case strings.Contains(assetName, ".usr-x86-64."), strings.Contains(assetName, ".usr-arm64."):
 			assetComponent = apiupdate.UpdateFileComponentOS
 			assetType = apiupdate.UpdateFileTypeUpdateUsr
+		case (strings.HasPrefix(assetName, "IncusOS_") || strings.HasPrefix(assetName, "HypervisorOS_")) && strings.HasSuffix(assetName, ".manifest.json.gz"):
+			assetComponent = apiupdate.UpdateFileComponentOS
+			assetType = apiupdate.UpdateFileTypeImageManifest
 		case strings.HasSuffix(assetName, "debug.manifest.json.gz"):
 			assetComponent = apiupdate.UpdateFileComponentDebug
 			assetType = apiupdate.UpdateFileTypeImageManifest
@@ -403,6 +409,9 @@ func (*cmdSync) downloadImage(ctx context.Context, archName string, releaseURL *
 			assetType = apiupdate.UpdateFileTypeImageManifest
 		case strings.HasSuffix(assetName, "migration-manager.manifest.json.gz"):
 			assetComponent = apiupdate.UpdateFileComponentMigrationManager
+			assetType = apiupdate.UpdateFileTypeImageManifest
+		case strings.HasSuffix(assetName, "openfga.manifest.json.gz"):
+			assetComponent = apiupdate.UpdateFileComponentOpenFGA
 			assetType = apiupdate.UpdateFileTypeImageManifest
 		case strings.HasSuffix(assetName, "operations-center.manifest.json.gz"):
 			assetComponent = apiupdate.UpdateFileComponentOperationsCenter

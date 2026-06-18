@@ -405,7 +405,7 @@ func TestNetworkConfigMarshalling(t *testing.T) {
 		require.Equal(t, "qPYSgwaJe0VZb4M8smTPpd2rfKHz0X0ypq54ZY4ATVQ=", cfg.Wireguard[0].Peers[1].PublicKey)
 
 		// Verify we can marshal and unmarshal the test config and don't loose any information.
-		content, err := yaml.Dump(&cfg, yaml.V2)
+		content, err := yaml.Dump(&cfg, yaml.WithV2Defaults())
 		require.NoError(t, err)
 
 		err = yaml.Load(content, &cfgAgain)
@@ -439,7 +439,7 @@ func TestNetworkConfigMarshalling(t *testing.T) {
 		require.Empty(t, cfg.Wireguard[0].PrivateKey)
 
 		// Verify we can marshal and unmarshal the test config and don't loose any information.
-		content, err := yaml.Dump(&cfg, yaml.V2)
+		content, err := yaml.Dump(&cfg, yaml.WithV2Defaults())
 		require.NoError(t, err)
 
 		err = yaml.Load(content, &cfgAgain)
@@ -474,7 +474,7 @@ func TestNetworkConfigMarshalling(t *testing.T) {
 		require.Equal(t, "anonymous", cfg.Proxy.Servers["example"].Auth)
 
 		// Verify we can marshal and unmarshal the test config and don't loose any information.
-		content, err := yaml.Dump(&cfg, yaml.V2)
+		content, err := yaml.Dump(&cfg, yaml.WithV2Defaults())
 		require.NoError(t, err)
 
 		err = yaml.Load(content, &cfgAgain)
@@ -517,7 +517,7 @@ func TestNetworkConfigMarshalling(t *testing.T) {
 		require.Equal(t, "management", cfg.VLANs[0].Roles[0])
 
 		// Verify we can marshal and unmarshal the test config and don't loose any information.
-		content, err := yaml.Dump(&cfg, yaml.V2)
+		content, err := yaml.Dump(&cfg, yaml.WithV2Defaults())
 		require.NoError(t, err)
 
 		err = yaml.Load(content, &cfgAgain)
@@ -586,7 +586,7 @@ func TestLinkFileGeneration(t *testing.T) {
 	cfgs = generateLinkFileContents(networkCfg)
 	require.Len(t, cfgs, 3)
 	require.Equal(t, "00-_paabbccddee01.link", cfgs[0].Name)
-	require.Equal(t, "[Match]\nPermanentMACAddress=AA:BB:CC:DD:EE:01\n\n[Link]\nMACAddressPolicy=random\nNamePolicy=\nName=_paabbccddee01\nGenericReceiveOffload=false\nGenericSegmentationOffload=false\nTCPSegmentationOffload=false\nTCP6SegmentationOffload=false\nWakeOnLan=magic\nWakeOnLan=secureon\nWakeOnLanPassword=11:22:33:44:55:66\n[EnergyEfficientEthernet]\nEnable=false\n", cfgs[0].Contents)
+	require.Equal(t, "[Match]\nPermanentMACAddress=AA:BB:CC:DD:EE:01\n\n[Link]\nMACAddressPolicy=random\nNamePolicy=\nName=_paabbccddee01\nGenericReceiveOffload=false\nGenericReceiveOffloadHardware=false\nGenericSegmentationOffload=false\nTCPSegmentationOffload=false\nTCP6SegmentationOffload=false\nWakeOnLan=magic\nWakeOnLan=secureon\nWakeOnLanPassword=11:22:33:44:55:66\n[EnergyEfficientEthernet]\nEnable=false\n", cfgs[0].Contents)
 	require.Equal(t, "01-_paabbccddee02.link", cfgs[1].Name)
 	require.Equal(t, "[Match]\nPermanentMACAddress=AA:BB:CC:DD:EE:02\n\n[Link]\nNamePolicy=\nName=_paabbccddee02\nTCPSegmentationOffload=false\nTCP6SegmentationOffload=false\n[EnergyEfficientEthernet]\nEnable=false\n", cfgs[1].Contents)
 	require.Equal(t, "01-_paabbccddee03.link", cfgs[2].Name)
@@ -600,7 +600,7 @@ func TestLinkFileGeneration(t *testing.T) {
 	cfgs = generateLinkFileContents(networkCfg)
 	require.Len(t, cfgs, 1)
 	require.Equal(t, "00-_paabbccddee01.link", cfgs[0].Name)
-	require.Equal(t, "[Match]\nPermanentMACAddress=AA:BB:CC:DD:EE:01\n\n[Link]\nMACAddressPolicy=random\nNamePolicy=\nName=_paabbccddee01\nGenericReceiveOffload=false\nTCPSegmentationOffload=false\nTCP6SegmentationOffload=false\nWakeOnLan=magic\nWakeOnLan=secureon\nWakeOnLanPassword=11:22:33:44:55:66\n[EnergyEfficientEthernet]\nEnable=false\n", cfgs[0].Contents)
+	require.Equal(t, "[Match]\nPermanentMACAddress=AA:BB:CC:DD:EE:01\n\n[Link]\nMACAddressPolicy=random\nNamePolicy=\nName=_paabbccddee01\nGenericReceiveOffload=false\nGenericReceiveOffloadHardware=false\nTCPSegmentationOffload=false\nTCP6SegmentationOffload=false\nWakeOnLan=magic\nWakeOnLan=secureon\nWakeOnLanPassword=11:22:33:44:55:66\n[EnergyEfficientEthernet]\nEnable=false\n", cfgs[0].Contents)
 }
 
 func TestNetdevFileGeneration(t *testing.T) {

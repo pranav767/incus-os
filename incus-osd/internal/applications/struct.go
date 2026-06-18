@@ -31,11 +31,12 @@ type Application interface { //nolint:interfacebloat
 	Name() string
 	NeedsLateUpdateCheck() bool
 	Restart(ctx context.Context) error
-	RestoreBackup(ctx context.Context, archive io.Reader) error
+	RestoreBackup(archive io.Reader) error
 	SetFriendlyVersion(ctx context.Context) error
 	SetVersions(version string, availableVersions []string)
 	Struct() any
 	Start(ctx context.Context) error
+	StartupWeight() int
 	Stop(ctx context.Context) error
 	SwitchVersion(newVersion string) error
 	Update(ctx context.Context) error

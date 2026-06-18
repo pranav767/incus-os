@@ -48,7 +48,8 @@
         ]
     },
     "lego": {
-        "version": "v5.1.0",
+        "version": "v4.35.2",
+        "version_prefix": "v4",
         "repo": "https://github.com/go-acme/lego.git",
         "build_targets": [
             [
@@ -56,7 +57,7 @@
                 "dist/lego",
                 "-ldflags",
                 "-X main.version=@VERSION@",
-                "."
+                "./cmd/lego"
             ]
         ],
         "install_targets": [
@@ -165,7 +166,7 @@
         ]
     },
     "netbird": {
-        "version": "v0.71.4",
+        "version": "v0.72.3",
         "repo": "https://github.com/netbirdio/netbird.git",
         "build_targets": [
             [
@@ -182,6 +183,26 @@
         ],
         "clean_targets": [
             "usr/local/bin/netbird"
+        ]
+    },
+    "openfga": {
+        "version": "v1.17.1",
+        "repo": "https://github.com/openfga/openfga.git",
+        "build_targets": [
+            [
+                "-ldflags",
+                "-X github.com/openfga/openfga/internal/build.Version=@VERSION@",
+                "./cmd/openfga"
+            ]
+        ],
+        "install_targets": [
+            [
+                "openfga",
+                "usr/local/bin/"
+            ]
+        ],
+        "clean_targets": [
+            "usr/local/bin/openfga"
         ]
     },
     "opentofu": {
@@ -235,7 +256,7 @@
         ]
     },
     "tailscale": {
-        "version": "v1.98.3",
+        "version": "v1.100.0",
         "repo": "https://github.com/tailscale/tailscale.git",
         "build_targets": [
             [

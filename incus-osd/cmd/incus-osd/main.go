@@ -4,6 +4,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -589,17 +590,21 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 
 	migratedApps := false
 
-	apps, err := applications.GetInstalled(ctx, s)
-	if err != nil {
-		return err
-	}
+	for _, appName := range applications.Supported {
+		app, err := applications.Load(ctx, s, appName)
+		if err != nil {
+			return err
+		}
 
-	for _, app := range apps {
 		oldPath := filepath.Join(systemd.SystemExtensionsPath, app.Name()+".raw")
 		newPath := filepath.Join(systemd.LocalExtensionsPath, app.Version(), app.Name()+".raw")
 
 		fileStat, err := os.Lstat(oldPath)
 		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+
 			return err
 		}
 
@@ -642,6 +647,10 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	}
 
 	slog.InfoContext(ctx, "System is starting up", "mode", mode, "version", s.OS.RunningRelease, "machine-id", strings.TrimSuffix(machineID, "\n"))
+
+	if mode != "production" && mode != "dev" {
+		return errors.New("currently unsupported operating mode")
+	}
 
 	// Create this channel early, so we don't block trying to trigger the fallback HTTPS listener.
 	// We can't move the channel processing loop here, because it depends on having a provider (and
@@ -749,18 +758,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	// Get the provider. Must be done after storage pools are loaded, since the operations-center
 	// provider depends on fetching the primary application's client certificate which may be
 	// stored in a local zfs dataset.
-	var provider string
+	defaultProvider := "images"
 
 	var providerConfig map[string]string
-
-	switch mode {
-	case "production":
-		provider = "images"
-	case "dev":
-		provider = "local"
-	default:
-		return errors.New("currently unsupported operating mode")
-	}
 
 	if s.System.Provider.Config.Name == "" {
 		// Apply the provider seed config (if present).
@@ -772,7 +772,7 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 		if providerSeed != nil {
 			s.System.Provider.Config = providerSeed.SystemProviderConfig
 		} else {
-			s.System.Provider.Config.Name = provider
+			s.System.Provider.Config.Name = defaultProvider
 			s.System.Provider.Config.Config = providerConfig
 		}
 
@@ -798,28 +798,9 @@ func startup(ctx context.Context, s *state.State) error { //nolint:revive
 	}
 
 	// Run application startup actions. Must be done after storage pools are loaded.
-	apps, err = applications.GetInstalled(ctx, s)
+	err = startApplications(ctx, s)
 	if err != nil {
 		return err
-	}
-
-	for _, app := range apps {
-		err := applications.StartInitialize(ctx, s, app.Name())
-		if err != nil {
-			if !app.IsPrimary() {
-				return err
-			}
-
-			slog.ErrorContext(ctx, err.Error())
-
-			// If not running from the backup image, which automatically starts the fallback HTTPS listener,
-			// attempt to start it when the primary application has failed to start.
-			if !s.OS.RunningFromBackup() {
-				slog.WarnContext(ctx, "Primary application "+app.Name()+" failed to start; attempting to enable fallback HTTPS server for basic connectivity")
-
-				s.TriggerFallbackListener <- true
-			}
-		}
 	}
 
 	// Run periodic update checks if we have a working provider.
@@ -1134,7 +1115,7 @@ func configureIncusAgent(ctx context.Context, s *state.State) error {
 	// Restart incus-agent if necessary.
 	if restartAgent {
 		// Write the configuration file.
-		data, err := yaml.Dump(&cfg, yaml.V2)
+		data, err := yaml.Dump(&cfg, yaml.WithV2Defaults())
 		if err != nil {
 			return err
 		}
@@ -1218,6 +1199,66 @@ func configureConsoleDevices(ctx context.Context, s *state.State) error {
 			if err != nil {
 				return err
 			}
+		}
+	}
+
+	return nil
+}
+
+func startApplications(ctx context.Context, s *state.State) error {
+	apps, err := applications.GetInstalled(ctx, s)
+	if err != nil {
+		return err
+	}
+
+	// Sort applications by their startup weights.
+	slices.SortStableFunc(apps, func(a, b applications.Application) int {
+		return cmp.Compare(a.StartupWeight(), b.StartupWeight())
+	})
+
+	// Start non-primary applications that should be started before the primary application.
+	for _, app := range apps {
+		if app.IsPrimary() || app.StartupWeight() > 0 {
+			continue
+		}
+
+		err := applications.StartInitialize(ctx, s, app.Name())
+		if err != nil {
+			// Don't kill the startup sequence if a non-primary application fails to start.
+			slog.ErrorContext(ctx, err.Error())
+		}
+	}
+
+	// Start the primary application.
+	for _, app := range apps {
+		if !app.IsPrimary() {
+			continue
+		}
+
+		err := applications.StartInitialize(ctx, s, app.Name())
+		if err != nil {
+			slog.ErrorContext(ctx, err.Error())
+
+			// If not running from the backup image, which automatically starts the fallback HTTPS listener,
+			// attempt to start it when the primary application has failed to start.
+			if !s.OS.RunningFromBackup() {
+				slog.WarnContext(ctx, "Primary application "+app.Name()+" failed to start; attempting to enable fallback HTTPS server for basic connectivity")
+
+				s.TriggerFallbackListener <- true
+			}
+		}
+	}
+
+	// Start non-primary applications that should be started after the primary application.
+	for _, app := range apps {
+		if app.IsPrimary() || app.StartupWeight() < 0 {
+			continue
+		}
+
+		err := applications.StartInitialize(ctx, s, app.Name())
+		if err != nil {
+			// Don't kill the startup sequence if a non-primary application fails to start.
+			slog.ErrorContext(ctx, err.Error())
 		}
 	}
 

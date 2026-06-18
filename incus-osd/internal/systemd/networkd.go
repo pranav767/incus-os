@@ -784,10 +784,6 @@ func getInterfaceState(ctx context.Context, ifaceType string, iface string, hwad
 		// #nosec G304
 		contents, err := os.ReadFile("/sys/class/net/" + underlyingDevice + "/speed")
 		if err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return api.SystemNetworkInterfaceState{}, err
-			}
-
 			speed = "unknown"
 		} else {
 			speed = strings.TrimSuffix(string(contents), "\n")
@@ -1216,7 +1212,7 @@ func generateLinkFileContents(networkCfg api.SystemNetworkConfig) []networkdConf
 
 		segments := []string{}
 		if s.DisableGRO {
-			segments = append(segments, "GenericReceiveOffload=false")
+			segments = append(segments, "GenericReceiveOffload=false", "GenericReceiveOffloadHardware=false")
 		}
 
 		if s.DisableGSO {

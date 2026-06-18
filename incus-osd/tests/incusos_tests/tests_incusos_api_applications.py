@@ -8,9 +8,9 @@ def TestIncusOSAPIApplicationsIncus(install_image):
         "install.json": "{}",
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         vm.WaitSystemReady(os_version)
 
         # Test top-level /1.0/applications endpoint.
@@ -55,6 +55,8 @@ def TestIncusOSAPIApplicationsIncus(install_image):
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
+        time.sleep(5)
+
         # Verify our test file is no longer present
         result = vm.RunCommand("stat", "/var/lib/incus/test-file", check=False)
         if result.returncode == 0:
@@ -64,6 +66,8 @@ def TestIncusOSAPIApplicationsIncus(install_image):
         result = vm.APIRequest("/1.0/applications/incus/:restore", method="POST", body=backup_archive, content_type="application/x-tar")
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
+
+        time.sleep(5)
 
         # Verify our test file is restored
         vm.RunCommand("stat", "/var/lib/incus/test-file")
@@ -75,9 +79,9 @@ def TestIncusOSAPIApplicationsMigrationManager(install_image):
         "applications.json": """{"applications":[{"name":"migration-manager"}]}"""
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         vm.WaitSystemReady(os_version, application="migration-manager")
 
         # Test top-level /1.0/applications endpoint.
@@ -114,6 +118,8 @@ def TestIncusOSAPIApplicationsMigrationManager(install_image):
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
+        time.sleep(5)
+
         # Verify our test file is no longer present
         result = vm.RunCommand("stat", "/var/lib/migration-manager/test-file", check=False)
         if result.returncode == 0:
@@ -123,6 +129,8 @@ def TestIncusOSAPIApplicationsMigrationManager(install_image):
         result = vm.APIRequest("/1.0/applications/migration-manager/:restore", method="POST", body=backup_archive, content_type="application/x-tar")
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
+
+        time.sleep(5)
 
         # Verify our test file is restored
         vm.RunCommand("stat", "/var/lib/migration-manager/test-file")
@@ -134,9 +142,9 @@ def TestIncusOSAPIApplicationsOperationsCenter(install_image):
         "applications.json": """{"applications":[{"name":"operations-center"}]}"""
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         vm.WaitSystemReady(os_version, application="operations-center")
 
         # Test top-level /1.0/applications endpoint.
@@ -173,6 +181,8 @@ def TestIncusOSAPIApplicationsOperationsCenter(install_image):
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
+        time.sleep(30)
+
         # Verify our test file is no longer present
         result = vm.RunCommand("stat", "/var/lib/operations-center/test-file", check=False)
         if result.returncode == 0:
@@ -182,6 +192,8 @@ def TestIncusOSAPIApplicationsOperationsCenter(install_image):
         result = vm.APIRequest("/1.0/applications/operations-center/:restore", method="POST", body=backup_archive, content_type="application/x-tar")
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
+
+        time.sleep(30)
 
         # Verify our test file is restored
         vm.RunCommand("stat", "/var/lib/operations-center/test-file")
@@ -193,9 +205,9 @@ def TestIncusOSAPIApplicationsIncusCeph(install_image):
         "applications.json": """{"applications":[{"name":"incus-ceph"}]}"""
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         vm.WaitSystemReady(os_version, application="incus-ceph")
 
         # Test top-level /1.0/applications endpoint.
@@ -231,9 +243,9 @@ def TestIncusOSAPIApplicationsIncusLinstor(install_image):
         "install.json": "{}",
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         vm.WaitSystemReady(os_version)
 
         # Test top-level /1.0/applications endpoint.
@@ -264,7 +276,7 @@ def TestIncusOSAPIApplicationsIncusLinstor(install_image):
         if result["status_code"] != 200:
             raise IncusOSException("unexpected status code %d: %s" % (result["error_code"], result["error"]))
 
-        vm.WaitExpectedLog("incus-osd", "Downloading application update application=incus-linstor version="+os_version)
+        vm.WaitExpectedLog("incus-osd", "Downloading application update application=incus-linstor channel=stable version="+os_version)
         vm.WaitExpectedLog("incus-osd", "Initializing application name=incus-linstor version=.+ \\["+os_version+"\\]", regex=True)
 
         result = vm.APIRequest("/1.0/applications")
@@ -299,9 +311,9 @@ def TestIncusOSAPIApplicationsRemove(install_image):
         "install.json": "{}",
     }
 
-    test_image, os_name, os_version = util._prepare_test_image(install_image, test_seed)
+    test_image, os_name, os_version, client_cert_name = util._prepare_test_image(install_image, test_seed)
 
-    with IncusTestVM(os_name, test_name, test_image) as vm:
+    with IncusTestVM(os_name, test_name, test_image, client_cert_name) as vm:
         vm.WaitSystemReady(os_version)
 
         # Test top-level /1.0/applications endpoint.
