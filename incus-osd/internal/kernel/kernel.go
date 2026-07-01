@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/lxc/incus/v7/shared/subprocess"
+	"github.com/lxc/incus/v7/shared/units"
 
 	"github.com/lxc/incus-os/incus-osd/api"
 	"github.com/lxc/incus-os/incus-osd/internal/systemd"
@@ -38,7 +42,172 @@ func ApplyKernelConfiguration(ctx context.Context, config api.SystemKernelConfig
 		}
 	}
 
+	// Enable zram swap, if configured.
+	if config.Memory != nil {
+		err := EnableZramSwap(ctx, config.Memory.ZramSwapSize)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
+}
+
+// EnableZramSwap enables zram-backed swap if the provided swapSize is greater than
+// zero bytes. Out of the box, IncusOS only supports the zstd compression algorithm.
+func EnableZramSwap(ctx context.Context, swapSize string) error {
+	if swapSize == "" {
+		return nil
+	}
+
+	// Convert the requested size to an integer number of bytes.
+	capacity, err := units.ParseByteSizeString(swapSize)
+	if err != nil {
+		return err
+	}
+
+	// Ensure the kernel module is loaded.
+	_, err = subprocess.RunCommandContext(ctx, "modprobe", "zram")
+	if err != nil {
+		return err
+	}
+
+	// Remove any existing zram device.
+	_, err = os.Stat("/dev/zram0")
+	if err == nil {
+		// Check if swap is currently enabled for the zram device; if so, first turn it off.
+		fd, err := os.Open("/proc/swaps")
+		if err != nil {
+			return err
+		}
+		defer fd.Close()
+
+		contents, err := io.ReadAll(fd)
+		if err != nil {
+			return err
+		}
+
+		if strings.Contains(string(contents), "/dev/zram0") {
+			_, err := subprocess.RunCommandContext(ctx, "swapoff", "/dev/zram0")
+			if err != nil {
+				return err
+			}
+		}
+
+		_, err = runZramCmd(ctx, "--reset", "/dev/zram0")
+		if err != nil {
+			return err
+		}
+	}
+
+	// If the requested capacity is zero, nothing to do after the zram device was removed.
+	if capacity == 0 {
+		return nil
+	}
+
+	// Create the zram device.
+	_, err = runZramCmd(ctx, "--find")
+	if err != nil {
+		return err
+	}
+
+	// Configure the zram device.
+	_, err = runZramCmd(ctx, "/dev/zram0", "--algorithm", "zstd", "--size", strconv.FormatInt(capacity, 10))
+	if err != nil {
+		return err
+	}
+
+	// Format zram as swap.
+	_, err = subprocess.RunCommandContext(ctx, "mkswap", "/dev/zram0")
+	if err != nil {
+		return err
+	}
+
+	// Enable the zram-backed swap.
+	_, err = subprocess.RunCommandContext(ctx, "swapon", "--priority", "100", "/dev/zram0")
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// GetZramSwapStats updates the kernel state struct with current zram statistics.
+func GetZramSwapStats(ctx context.Context, kernelState *api.SystemKernelState) error {
+	// Check if the zram device exists.
+	_, err := os.Stat("/dev/zram0")
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+
+		return nil
+	}
+
+	// Get current zram swap stats.
+	output, err := runZramCmd(ctx, "--bytes", "--noheadings", "--raw", "--output", "DISKSIZE,DATA,COMPR,TOTAL", "/dev/zram0")
+	if err != nil {
+		return err
+	}
+
+	values := strings.Split(strings.TrimSpace(output), " ")
+
+	diskSize, err := strconv.Atoi(values[0])
+	if err != nil {
+		return err
+	}
+
+	uncompressedSize, err := strconv.Atoi(values[1])
+	if err != nil {
+		return err
+	}
+
+	compressedSize, err := strconv.Atoi(values[2])
+	if err != nil {
+		return err
+	}
+
+	totalMemoryUse, err := strconv.Atoi(values[3])
+	if err != nil {
+		return err
+	}
+
+	compressionRatio := float64(uncompressedSize) / float64(totalMemoryUse)
+
+	if kernelState.Memory == nil {
+		kernelState.Memory = new(api.SystemKernelStateMemory)
+	}
+
+	// Record the state.
+	kernelState.Memory.ZramSwap = &api.SystemKernelStateMemoryZramSwap{
+		Disksize:         diskSize,
+		UncompressedSize: uncompressedSize,
+		CompressedSize:   compressedSize,
+		CompressionRatio: compressionRatio,
+		TotalMemoryUse:   totalMemoryUse,
+	}
+
+	return nil
+}
+
+// The zramctl command is a bit too flaky and frequently returns "Device or resource busy"
+// errors. To handle this, try each command up to ten times with brief sleeps in between
+// before fully failing.
+func runZramCmd(ctx context.Context, args ...string) (string, error) {
+	var output string
+
+	var err error
+
+	for range 10 {
+		output, err = subprocess.RunCommandContext(ctx, "zramctl", args...)
+		if err == nil {
+			break
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	return output, err
 }
 
 func updateBlacklistModules(modules []string) error {

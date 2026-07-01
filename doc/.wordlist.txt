@@ -39,6 +39,7 @@ Furo
 FuturFusion
 GiB
 Github
+GPG
 GPUs
 Headscale
 Hetzner
@@ -83,6 +84,7 @@ networkctl
 NICs
 NTP
 NVMe
+NVRAM
 OCI
 oddlama
 OEM
@@ -149,3 +151,4 @@ Xeon
 YAML
 Zabbly
 ZFS
+zram

@@ -17,7 +17,8 @@ type SystemKernelConfigConsole struct {
 
 // SystemKernelConfigMemory holds memory-specific kernel configuration.
 type SystemKernelConfigMemory struct {
-	PersistentHugepages int `json:"persistent_hugepages" yaml:"persistent_hugepages"`
+	PersistentHugepages int    `json:"persistent_hugepages" yaml:"persistent_hugepages"`
+	ZramSwapSize        string `json:"zram_swap_size"       yaml:"zram_swap_size"`
 }
 
 // SystemKernelConfigNetwork holds network-specific kernel configuration.
@@ -40,7 +41,24 @@ type SystemKernelConfigPCIPassthrough struct {
 }
 
 // SystemKernelState represents state for the system's kernel-level configuration.
-type SystemKernelState struct{}
+type SystemKernelState struct {
+	Memory *SystemKernelStateMemory `json:"memory,omitempty" yaml:"memory,omitempty"`
+}
+
+// SystemKernelStateMemory represents state for the system's kernel-level memory configuration.
+type SystemKernelStateMemory struct {
+	ZramSwap *SystemKernelStateMemoryZramSwap `json:"zram_swap,omitempty" yaml:"zram_swap,omitempty"`
+}
+
+// SystemKernelStateMemoryZramSwap reports statistics about the configured zram-backed swap device, if present.
+// Reported sizes are in bytes.
+type SystemKernelStateMemoryZramSwap struct {
+	Disksize         int     `json:"disk_size"         yaml:"disk_size"`
+	UncompressedSize int     `json:"incompressed_size" yaml:"uncompressed_size"`
+	CompressedSize   int     `json:"compressed_size"   yaml:"compressed_size"`
+	CompressionRatio float64 `json:"compression_ratio" yaml:"compression_ratio"`
+	TotalMemoryUse   int     `json:"total_memory_use"  yaml:"total_memory_use"`
+}
 
 // SystemKernel defines a struct to hold information about the system's kernel-level configuration.
 type SystemKernel struct {
